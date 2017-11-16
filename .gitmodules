@@ -1,0 +1,3 @@
+[submodule "imgio"]
+	path = imgio
+	url = https://github.com/toaarnio/imgio.git
