@@ -41,6 +41,15 @@ def exists(argname):
     else:
         return False
 
+def intval(argname, default=None):
+    """
+    Example:
+      width = argv.width("--width", default=0)
+    """
+    argstr = _string(argname)
+    useDefault = argstr is None or argstr == default
+    return default if useDefault else int(argstr)
+
 def floatval(argname, default=None):
     """
     Example:
