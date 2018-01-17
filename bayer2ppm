@@ -173,7 +173,8 @@ if __name__ == "__main__":
     try:
         t0 = time.time()
         ncpu = multiproc.cpu_count()
-        multiproc.run(process, arguments, nproc=int(ncpu/2), raiseExceptions=False)
+        ncpu = max(1, int(ncpu / 2))
+        multiproc.run(process, arguments, nproc=ncpu, raiseExceptions=False)
         elapsed = time.time() - t0
         perFile = float(elapsed) / numFiles * 1000
         if numFiles > 1:
