@@ -38,13 +38,12 @@ def whiteLevel(frame, maxOutliers=100):
 def quantize(frame, maxval=65535, newmaxval=1023):
     """
     Quantizes the given image (raw or demosaiced) to the given bit depth.
-    The image is returned as uint16, whether or not it was originally in
-    that format.
+    Returns the image in float64 format, except when maxval == newmaxval,
+    in which case this function does nothing.
     """
     if maxval != newmaxval:
         scale = float(newmaxval) / maxval
         frame = frame * scale  # frame.dtype is now np.float64
-    frame = (frame + 0.5).astype(np.uint16)
     return frame
 
 def gamma(frame, maxval, mode):  # mode = rec709 | sRGB | None

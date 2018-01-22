@@ -25,10 +25,13 @@ class ISPConfig(object):
         self.gic = None               # None | <float>
         self.wb = None                # None | tuple(<float>, <float>)
         self.gamma = None             # None | sRGB | rec709
+        self.outbpp = None            # None | <uint>
+        self.outformat = None         # hardcoded to "ppm"
 
 def bayer2ppm(config, infilename, outfilename):
-    print("Converting %s to PPM..."%(infilename))
+    print("Converting %s to %s..."%(infilename, config.outformat.upper()))
     tStart = t0 = time.time()
+    outbpp = config.outbpp
     blackLevel = config.blackLevel
     whiteLevel = config.whiteLevel
     bayerPattern = config.bayerPattern
@@ -97,13 +100,20 @@ def bayer2ppm(config, infilename, outfilename):
         result = isptools.gamma(result, maxval, config.gamma)
         print("%8.2f ms - applying gamma correction (%s)"%((time.time()-t0)*1000, config.gamma))
 
-    if result.dtype != np.uint16 or maxval < 1023:
+    if outbpp is not None and maxval != (2**outbpp - 1):
         t0 = time.time()
-        newmaxval = max(maxval, 1023)
+        newmaxval = 2**outbpp - 1
         result = isptools.quantize(result, maxval, newmaxval)
-        newbpp = np.log2(newmaxval+1)
         maxval = newmaxval
-        print("%8.2f ms - converting to uint16 (%d -> %d bpp)"%((time.time()-t0)*1000, bpp, newbpp))
+        print("%8.2f ms - converting from %d bpp to %d bpp"%((time.time()-t0)*1000, bpp, outbpp))
+
+    if result.dtype not in [np.uint8, np.uint16]:
+        t0 = time.time()
+        oldtype = result.dtype
+        newtype = 'uint8' if maxval <= 255 else 'uint16'
+        rounded = result + 0.5
+        result = rounded.astype(newtype)
+        print("%8.2f ms - converting from %s to %s"%((time.time()-t0)*1000, oldtype, newtype))
 
     if True:
         t0 = time.time()
@@ -126,7 +136,7 @@ def enforce(expression, messageIfFalse):
 
 def process(config, infilespec):
     infilename = os.path.basename(infilespec)
-    outfilename = infilename.rsplit('.', 1)[0] + ".ppm"
+    outfilename = infilename.rsplit('.', 1)[0] + "." + config.outformat
     bayer2ppm(config, infilespec, outfilename)
 
 if __name__ == "__main__":
@@ -141,6 +151,8 @@ if __name__ == "__main__":
     config.gic = argv.floatval("--gic")
     config.wb = argv.floatpair("--wb")
     config.gamma = argv.validstring("--gamma", default=None, validStrings=["rec709", "sRGB"])
+    config.outbpp = argv.intval("--outbpp", default=None)
+    config.outformat = "ppm"  # currently hardcoded
     showHelp = argv.exists("--help")
     argv.exitIfAnyUnparsedOptions()
 
@@ -157,6 +169,7 @@ if __name__ == "__main__":
         print("    --gic F                        multiply Gr pixels by F to fix green imbalance; default = 1.000")
         print("    --wb R B                       multiply R and B pixels by the given factors; default = 1.0 1.0")
         print("    --gamma sRGB|rec709            apply gamma according to sRGB or rec709; default = None")
+        print("    --outbpp N                     output bit depth (None = keep original); default = None")
         print("    --help                         show this help message")
         print()
         print("  Converts the given 10/12/16-bit Bayer raw PGM/PNG/RAW file(s) into RGB PPM using a reference")
@@ -169,12 +182,12 @@ if __name__ == "__main__":
     numFiles = len(filenames)
     enforce(numFiles > 0, "No valid raw Bayer PGM/PNG/RAW files to process. Terminating.")
     signal.signal(signal.SIGINT, lambda s,f: onExit())  # Ctrl+C handler
-    print("Processing %d image(s)..."%(numFiles))
+    ncpu = multiproc.cpu_count()
+    nproc = max(1, int(ncpu / 2))
+    print("Processing %d image(s) using up to %d concurrent processes..."%(numFiles, nproc))
     try:
         t0 = time.time()
-        ncpu = multiproc.cpu_count()
-        ncpu = max(1, int(ncpu / 2))
-        multiproc.run(process, arguments, nproc=ncpu, raiseExceptions=False)
+        multiproc.run(process, arguments, nproc, raiseExceptions=False)
         elapsed = time.time() - t0
         perFile = float(elapsed) / numFiles * 1000
         if numFiles > 1:
