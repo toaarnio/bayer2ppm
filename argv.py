@@ -20,14 +20,15 @@ def filenames(patterns, extensions=None, sort=False):
       filenames, basenames = argv.filenames(sys.argv[1:])
       filenames, basenames = argv.filenames(sys.argv[1:], [".ppm", ".png"], sort=True)
     """
-    filenames = [glob.glob(filepattern) for filepattern in patterns]                # expand wildcards
-    filenames = [item for sublist in filenames for item in sublist]                 # flatten nested lists
-    filenames = [f for f in set(filenames) if os.path.exists(f)]                    # check file existence
-    if extensions is not None:
-        filenames = [f for f in filenames if os.path.splitext(f)[1] in extensions]  # filter by extension
-    filenames = sorted(filenames) if sort else filenames                            # sort if requested
-    basenames = [os.path.splitext(f)[0] for f in filenames]                         # strip extensions
-    return filenames, basenames
+    fnames = [glob.glob(filepattern) for filepattern in patterns]  # expand wildcards
+    fnames = [item for sublist in fnames for item in sublist]      # flatten nested lists
+    fnames = [f for f in set(fnames) if os.path.exists(f)]         # check file existence
+    validExt = lambda f: os.path.splitext(f)[1] in extensions
+    filterExt = lambda f: validExt(f) or extensions is None
+    fnames = [f for f in fnames if filterExt(f)]                   # filter by extension
+    fnames = sorted(fnames) if sort else fnames                    # sort if requested
+    bnames = [os.path.splitext(f)[0] for f in fnames]              # strip extensions
+    return fnames, bnames
 
 def exists(argname):
     """
@@ -38,8 +39,7 @@ def exists(argname):
         argidx = sys.argv.index(argname)
         del sys.argv[argidx]
         return True
-    else:
-        return False
+    return False
 
 def intval(argname, default=None):
     """
@@ -70,8 +70,7 @@ def floatpair(argname, default=None):
         val2 = float(sys.argv[argidx + 2])
         del sys.argv[argidx:argidx+3]
         return (val1, val2)
-    else:
-        return default
+    return default
 
 def validint(argname, default=None, validInts=None):
     """
@@ -116,6 +115,12 @@ def floatstring(argname, default=None, validStrings=None):
         return default
 
 def exitIfAnyUnparsedOptions():
+    """
+    Example:
+      factor = argv.floatval("--factor", default=1.0)
+      showHelp = argv.exists("--help")
+      argv.exitIfAnyUnparsedOptions()
+    """
     isOptionArg = ["--" in arg for arg in sys.argv]
     if any(isOptionArg):
         argname = sys.argv[isOptionArg.index(True)]
@@ -134,13 +139,12 @@ def _string(argname, default=None):
         argstr = sys.argv[argidx + 1]
         del sys.argv[argidx:argidx+2]
         return argstr
-    else:
-        return default
+    return default
 
 def _isValid(argname, arg, validArgs=None):
     if validArgs is not None:
         if arg not in validArgs:
-            print("Unrecognized value for command-line option '%s': '%s'"%(argname, arg))
-            print("The available values include: %s"%str(validArgs)[1:-1])
+            print("Invalid value for command-line option '%s': '%s'"%(argname, arg))
+            print("Valid values include: %s"%str(validArgs)[1:-1])
             return False
     return True
