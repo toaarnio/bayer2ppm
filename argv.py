@@ -19,21 +19,22 @@ import unittest                   # standard library
 #
 ######################################################################################
 
-def filenames(patterns, extensions=None, sort=False):
+def filenames(patterns, extensions=None, sort=False, allowAllCaps=False):
     """
     Examples:
       filenames, basenames = argv.filenames(sys.argv[1:])
       filenames, basenames = argv.filenames(sys.argv[1:], [".ppm", ".png"], sort=True)
+      filenames, basenames = argv.filenames(sys.argv[1:], [".jpg"], allowAllCaps=True)
     """
-    fnames = [glob.glob(filepattern) for filepattern in patterns]  # expand wildcards
-    fnames = [item for sublist in fnames for item in sublist]      # flatten nested lists
-    fnames = [f for f in set(fnames) if os.path.exists(f)]         # check file existence
-    validExt = lambda f: os.path.splitext(f)[1] in extensions
-    filterExt = lambda f: validExt(f) or extensions is None
-    fnames = [f for f in fnames if filterExt(f)]                   # filter by extension
-    fnames = sorted(fnames) if sort else fnames                    # sort if requested
-    bnames = [os.path.splitext(f)[0] for f in fnames]              # strip extensions
-    return fnames, bnames
+    filenames = [glob.glob(filepattern) for filepattern in patterns]                # expand wildcards
+    filenames = [item for sublist in filenames for item in sublist]                 # flatten nested lists
+    filenames = [f for f in set(filenames) if os.path.exists(f)]                    # check file existence
+    if extensions is not None:
+        extensions += [e.upper() for e in extensions] if allowAllCaps else []       # jpg => [jpg, JPG]
+        filenames = [f for f in filenames if os.path.splitext(f)[1] in extensions]  # filter by extension
+    filenames = sorted(filenames) if sort else filenames                            # sort if requested
+    basenames = [os.path.splitext(f)[0] for f in filenames]                         # strip extensions
+    return filenames, basenames
 
 def exists(argname):
     """
@@ -86,6 +87,19 @@ def stringval(argname, default=None, accepted=None, condition=None):
         if not _isValid(argname, argstr, accepted, condition):
             sys.exit(-1)
     return default if useDefault else argstr
+
+def intpair(argname, default=None):
+    """
+    Example:
+      width, height = argv.intpair("--size", default=(1920, 1080))
+    """
+    if argname in sys.argv:
+        argidx = sys.argv.index(argname)
+        val1 = int(sys.argv[argidx + 1])
+        val2 = int(sys.argv[argidx + 2])
+        del sys.argv[argidx:argidx+3]
+        return (val1, val2)
+    return default
 
 def floatpair(argname, default=None):
     """

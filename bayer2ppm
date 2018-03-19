@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import sys, os, signal, time   # built-in libraries
 import numpy as np             # pip install numpy
+import imgio                   # pip install imgio
 
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'imgio'))
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'multiproc'))
@@ -11,7 +12,6 @@ sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'multi
 import argv                    # local import: argv.py
 import isptools                # local import: isptools.py
 import demosaic                # local import: demosaic.py
-import imgio                   # submodule import: imgio.py
 import multiproc               # submodule import: multiproc.py
 
 class ISPConfig(object):
