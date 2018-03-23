@@ -1,18 +1,33 @@
-#!/usr/bin/python -B
+#!/usr/bin/python3 -B
 
-from __future__ import print_function
+"""
+Converts Bayer raw PGM/PNG/RAW images into RGB PPM.
+"""
 
-import sys, os, signal, time   # built-in libraries
-import numpy as np             # pip install numpy
-import imgio                   # pip install imgio
+# pylint: disable=invalid-name
+# pylint: disable=c-extension-no-member
+# pylint: disable=wrong-import-position
+# pylint: disable=too-many-locals
+# pylint: disable=too-many-instance-attributes
+# pylint: disable=too-many-branches
+# pylint: disable=too-many-statements
+# pylint: disable=too-few-public-methods
 
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'imgio'))
+from __future__ import print_function as __print  # hide from help
+
+import sys              # built-in library
+import os               # built-in library
+import signal           # built-in library
+import time             # built-in library
+import numpy as np      # pip install numpy
+import imgio            # pip install imgio
+import argv             # local import: argv.py
+import isptools         # local import: isptools.py
+import demosaic         # local import: demosaic.py
+
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'multiproc'))
 
-import argv                    # local import: argv.py
-import isptools                # local import: isptools.py
-import demosaic                # local import: demosaic.py
-import multiproc               # submodule import: multiproc.py
+import multiproc        # submodule import: multiproc.py
 
 class ISPConfig(object):
     def __init__(self):
@@ -30,9 +45,10 @@ class ISPConfig(object):
         self.dryRun = False           # currently hardcoded
         self.outformat = "ppm"        # currently hardcoded
 
+
 def bayer2ppm(config, infilename, outfilename):
     print("Converting %s to %s..."%(infilename, config.outformat.upper()))
-    elapsed = lambda: (time.time() - t0) * 1000
+    elapsed = lambda t0: (time.time() - t0) * 1000
     tStart = t0 = time.time()
     outbpp = config.outbpp
     blackLevel = config.blackLevel
@@ -45,24 +61,24 @@ def bayer2ppm(config, infilename, outfilename):
     raw = raw[cropRow] if (height % 2) != 0 else raw  # must have even number of rows
     raw = raw[cropCol] if (width % 2) != 0 else raw   # must have even number of columns
     height, width = raw.shape[:2]
-    bpp = np.log2(maxval+1)
-    print("%8.2f ms - reading input file: %d x %d, %d bpp"%(elapsed(), width, height, bpp))
+    bpp = np.log2(maxval + 1)
+    print("%8.2f ms - reading input file: %d x %d, %d bpp"%(elapsed(t0), width, height, bpp))
 
     if isinstance(config.blackLevel, str):  # dtype: <unchanged>
         t0 = time.time()
         if config.blackLevel == "AUTO":
-            blackLevel = isptools.blackLevel(raw, maxOutliers=1000)
-        print("%8.2f ms - estimating black level: %.2f (%s)"%(elapsed(), blackLevel, config.blackLevel))
+            blackLevel = isptools.blacklevel(raw, max_outliers=1000)
+        print("%8.2f ms - estimating black level: %.2f (%s)"%(elapsed(t0), blackLevel, config.blackLevel))
         if blackLevel > maxval / 8.0:
-            print("%sWARNING: Estimated black level is very high. Is this a genuine raw image?"%(' '*14))
+            print("%sWARNING: Estimated black level is very high. Is this a genuine raw image?"%(' ' * 14))
 
     if isinstance(config.whiteLevel, str):  # dtype: <unchanged>
         t0 = time.time()
         if config.whiteLevel == "MAX":
             whiteLevel = maxval
         elif config.whiteLevel == "AUTO":
-            whiteLevel = isptools.whiteLevel(raw, maxOutliers=100)
-            print("%8.2f ms - estimating white level: %d"%(elapsed(), whiteLevel))
+            whiteLevel = isptools.whitelevel(raw, max_outliers=100)
+            print("%8.2f ms - estimating white level: %d"%(elapsed(t0), whiteLevel))
 
     if blackLevel > 0 or whiteLevel < maxval:  # dtype: uint16 / float32 ==> float32
         t0 = time.time()
@@ -71,7 +87,7 @@ def bayer2ppm(config, infilename, outfilename):
         raw = raw - blackLevel
         scale = maxval / float(whiteLevel - blackLevel)
         raw = raw * scale
-        print("%8.2f ms - rescaling from [%.2f, %.2f] to [0, %d]"%(elapsed(), blackLevel, whiteLevel, maxval))
+        print("%8.2f ms - rescaling from [%.2f, %.2f] to [0, %d]"%(elapsed(t0), blackLevel, whiteLevel, maxval))
 
     if config.gic or config.wb:  # dtype: uint16 / float32 ==> float32
         t0 = time.time()
@@ -90,26 +106,26 @@ def bayer2ppm(config, infilename, outfilename):
         raw[0::2, 1::2] *= c2
         raw[1::2, 0::2] *= c3
         raw[1::2, 1::2] *= c4
-        print("%8.2f ms - applying per-channel gains: [R=%.3f, Gr=%.3f, Gb=%.3f, B=%.3f]"%(elapsed(), r, gr, gb, b))
+        print("%8.2f ms - applying per-channel gains: [R=%.3f, Gr=%.3f, Gb=%.3f, B=%.3f]"%(elapsed(t0), r, gr, gb, b))
 
     if config.demosaic:
         t0 = time.time()
         raw = raw.astype(np.float32)
         raw = demosaic.demosaic(raw, pattern=bayerPattern.lower(), method='hq_linear', clip=(0, maxval))
-        print("%8.2f ms - demosaicing (high quality, %s)"%((time.time()-t0)*1000, bayerPattern))
+        print("%8.2f ms - demosaicing (high quality, %s)"%(elapsed(t0), bayerPattern))
 
     if config.gamma is not None:  # sRGB | rec709 | None
         t0 = time.time()
         raw = raw.astype(np.float32)
         raw = isptools.gamma(raw, maxval, config.gamma)
-        print("%8.2f ms - applying gamma correction (%s)"%(elapsed(), config.gamma))
+        print("%8.2f ms - applying gamma correction (%s)"%(elapsed(t0), config.gamma))
 
     if outbpp is not None and maxval != (2**outbpp - 1):
         t0 = time.time()
         newmaxval = 2**outbpp - 1
         raw = isptools.quantize(raw, maxval, newmaxval)
         maxval = newmaxval
-        print("%8.2f ms - converting from %d bpp to %d bpp"%(elapsed(), bpp, outbpp))
+        print("%8.2f ms - converting from %d bpp to %d bpp"%(elapsed(t0), bpp, outbpp))
 
     if raw.dtype not in [np.uint8, np.uint16]:
         t0 = time.time()
@@ -117,15 +133,15 @@ def bayer2ppm(config, infilename, outfilename):
         newtype = 'uint8' if maxval <= 255 else 'uint16'
         rounded = raw + 0.5
         raw = rounded.astype(newtype)
-        print("%8.2f ms - converting from %s to %s"%(elapsed(), oldtype, newtype))
+        print("%8.2f ms - converting from %s to %s"%(elapsed(t0), oldtype, newtype))
 
     if not config.dryRun:
         t0 = time.time()
         raw = np.clip(raw, 0, maxval)
         imgio.imwrite(outfilename, raw, maxval)
-        print("%8.2f ms - writing demosaiced RGB to %s file"%(elapsed(), config.outformat.upper()))
+        print("%8.2f ms - writing demosaiced RGB to %s file"%(elapsed(t0), config.outformat.upper()))
 
-    print("%8.2f ms - TOTAL\n"%((time.time()-tStart)*1000))
+    print("%8.2f ms - TOTAL\n"%(elapsed(tStart)))
 
 
 class TerminationRequest(IOError):
@@ -180,7 +196,7 @@ def _main():
         print()
         sys.exit(-1)
 
-    filenames, basenames = argv.filenames(sys.argv[1:], [".pgm", ".png", ".raw"], sort=True)
+    filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".raw"], sort=True)
     arguments = [(config, filename) for filename in filenames]
     numFiles = len(filenames)
     _enforce(numFiles > 0, "No valid raw Bayer PGM/PNG/RAW files to process. Terminating.")
@@ -190,12 +206,12 @@ def _main():
     print("Processing %d image(s) using up to %d concurrent processes..."%(numFiles, nproc))
     try:
         t0 = time.time()
-        multiproc.run(_process, arguments, nproc, raiseExceptions=False)
+        multiproc.run(_process, arguments, nproc, raise_exceptions=False)
         elapsed = time.time() - t0
         perFile = float(elapsed) / numFiles * 1000
         if numFiles > 1:
             print("Processed %d files in %.1f seconds (%d ms per file)"%(numFiles, elapsed, perFile))
-    except Exception:
+    except BaseException:
         import traceback
         traceback.print_exc()
     finally:
