@@ -88,7 +88,7 @@ def stringval(argname, default=None, accepted=None, condition=None):
             sys.exit(-1)
     return default if useDefault else argstr
 
-def intpair(argname, default=None):
+def intpair(argname, default=(None, None)):
     """
     Example:
       width, height = argv.intpair("--size", default=(1920, 1080))
