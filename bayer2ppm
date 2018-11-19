@@ -39,9 +39,13 @@ class ISPConfig(object):
         self.bayerPattern = None      # RGGB | GBRG | BGGR | GRBG
         self.gic = None               # None | <float>
         self.wb = None                # None | tuple(<float>, <float>)
+        self.wp = None                # None | tuple(<float>, <float>, <float>)
+        self.ccmfile = None           # None | <string>
+        self.ccm = None               # None | <float3x3>
         self.gamma = None             # None | sRGB | rec709
         self.outbpp = None            # None | <uint>
-        self.debug = False            # True | False
+        self.verbose = None           # True | False
+        self.debug = None             # True | False
         self.demosaic = True          # currently hardcoded
         self.dryRun = False           # currently hardcoded
         self.outformat = "ppm"        # currently hardcoded
@@ -119,6 +123,12 @@ def bayer2ppm(config, infilename, outfilename):
         raw = demosaic.demosaic(raw, pattern=bayerPattern.lower(), method='hq_linear', clip=(0, maxval))
         print("%8.2f ms - demosaicing (high quality, %s)"%(elapsed(t0), bayerPattern))
 
+    if config.ccm is not None:
+        t0 = time.time()
+        raw = np.dot(raw, config.ccm.T)
+        raw = np.clip(raw, 0, maxval)
+        print("%8.2f ms - applying CCM [%s]"%(elapsed(t0), config.ccmfile))
+
     if config.gamma is not None:  # sRGB | rec709 | None
         t0 = time.time()
         raw = raw.astype(np.float32)
@@ -174,8 +184,11 @@ def _main():
     config.whiteLevel = argv.floatstring("--whitelevel", default="MAX", accepted=["AUTO", "MAX"])
     config.gic = argv.floatval("--gic")
     config.wb = argv.floatpair("--wb")
+    config.wp = argv.floattriple("--wp")
+    config.ccmfile = argv.stringval("--ccm", default=None)
     config.gamma = argv.stringval("--gamma", default=None, accepted=["rec709", "sRGB"])
     config.outbpp = argv.intval("--outbpp", default=None, accepted=[8, 10, 12, 14, 16])
+    config.verbose = argv.exists("--verbose")
     config.debug = argv.exists("--debug")
     showHelp = argv.exists("--help")
     argv.exitIfAnyUnparsedOptions()
@@ -191,15 +204,30 @@ def _main():
         print("    --whitelevel N|AUTO|MAX        pixel value to consider fully saturated; default = MAX")
         print("    --gic F                        multiply Gr pixels by F to fix green imbalance; default = 1.000")
         print("    --wb R B                       multiply R and B pixels by the given factors; default = 1.0 1.0")
+        print("    --wp R G B                     alternative way to specify WB gains; equivalent to '--wb G/R G/B'")
+        print("    --ccm filename.csv             load 3 x 3 color correction matrix from CSV file; default = None")
         print("    --gamma sRGB|rec709            apply gamma according to sRGB or rec709; default = None")
         print("    --outbpp N                     output bit depth (None = keep original); default = None")
         print("    --debug                        write unprocessed data to disk as .PGM (for .RAW only)")
+        print("    --verbose                      print extra traces for diagnostics")
         print("    --help                         show this help message")
         print()
         print("  Converts the given 10/12/16-bit Bayer raw PGM/PNG/RAW file(s) into RGB PPM using a reference")
         print("  ISP pipeline written in Python.")
         print()
         sys.exit(-1)
+
+    # derive WB gains from given RGB white point (G must have highest value)
+    if config.wp is not None:
+        rGain = config.wp[1] / config.wp[0]
+        bGain = config.wp[1] / config.wp[2]
+        config.wb = (rGain, bGain)
+
+    # load 3 x 3 CCM from given CSV file
+    if config.ccmfile is not None:
+        ccmfiles, basenames = argv.filenames([config.ccmfile])
+        _enforce(len(ccmfiles) > 0, "CCM file %s not found. Terminating."%(config.ccmfile))
+        config.ccm = np.genfromtxt(config.ccmfile, delimiter=",")
 
     filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".raw"], sort=True, allowAllCaps=True)
     arguments = [(config, filename) for filename in filenames]
@@ -211,14 +239,17 @@ def _main():
     print("Processing %d image(s) using up to %d concurrent processes..."%(numFiles, nproc))
     try:
         t0 = time.time()
-        multiproc.run(_process, arguments, nproc, raise_exceptions=False)
+        multiproc.run(_process, arguments, nproc, raise_exceptions=True)
         elapsed = time.time() - t0
         perFile = float(elapsed) / numFiles * 1000
         if numFiles > 1:
             print("Processed %d files in %.1f seconds (%d ms per file)"%(numFiles, elapsed, perFile))
-    except BaseException:
-        import traceback
-        traceback.print_exc()
+    except BaseException as e:
+        if config.verbose:
+            import traceback
+            traceback.print_exc()
+        else:
+            print(e)
     finally:
         signal.signal(signal.SIGINT, signal.SIG_DFL)
 
