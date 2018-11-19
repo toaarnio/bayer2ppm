@@ -101,6 +101,20 @@ def intpair(argname, default=(None, None)):
         return (val1, val2)
     return default
 
+def inttriple(argname, default=None):
+    """
+    Example:
+      r, g, b = argv.inttriple("--rgb", default=(192, 127, 255))
+    """
+    if argname in sys.argv:
+        argidx = sys.argv.index(argname)
+        val1 = int(sys.argv[argidx + 1])
+        val2 = int(sys.argv[argidx + 2])
+        val3 = int(sys.argv[argidx + 3])
+        del sys.argv[argidx:argidx + 4]
+        return (val1, val2, val3)
+    return default
+
 def floatpair(argname, default=None):
     """
     Example:
@@ -112,6 +126,20 @@ def floatpair(argname, default=None):
         val2 = float(sys.argv[argidx + 2])
         del sys.argv[argidx:argidx + 3]
         return (val1, val2)
+    return default
+
+def floattriple(argname, default=None):
+    """
+    Example:
+      r, g, b = argv.floattriple("--rgb", default=(0.8, 0.9, 0.6))
+    """
+    if argname in sys.argv:
+        argidx = sys.argv.index(argname)
+        val1 = float(sys.argv[argidx + 1])
+        val2 = float(sys.argv[argidx + 2])
+        val3 = float(sys.argv[argidx + 3])
+        del sys.argv[argidx:argidx + 4]
+        return (val1, val2, val3)
     return default
 
 def floatstring(argname, default=None, accepted=None):
