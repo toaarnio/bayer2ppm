@@ -20,6 +20,7 @@ import os               # built-in library
 import signal           # built-in library
 import time             # built-in library
 import numpy as np      # pip install numpy
+import rawpy            # pip install rawpy
 import imgio            # pip install imgio
 import argv             # local import: argv.py
 import isptools         # local import: isptools.py
@@ -61,9 +62,23 @@ def bayer2ppm(config, infilename, outfilename):
     blackLevel = config.blackLevel
     whiteLevel = config.whiteLevel
     bayerPattern = config.bayerPattern
-    raw, maxval = imgio.imread(infilename, config.width, config.height, config.bpp)
-    if config.debug and filetype in ["raw", "RAW"]:
-        imgio.imwrite(basename[:-4] + ".pgm", raw, maxval, verbose=False)
+
+    if filetype.lower() == "dng":
+        dng = rawpy.imread(infilename)
+        raw = dng.raw_image_visible.copy()
+        bpp = np.log2(np.max(raw))
+        maxval = 2 ** int(np.ceil(bpp)) - 1
+        if config.debug:
+            rgb = dng.postprocess(output_bps=16, use_camera_wb=True)
+            imgio.imwrite(basename[:-4] + ".pgm", raw, maxval, verbose=True)
+            imgio.imwrite(basename[:-4] + ".pnm", rgb, 65535, verbose=True)
+    elif filetype.lower() == "raw":
+        raw, maxval = imgio.imread(infilename, config.width, config.height, config.bpp)
+        if config.debug:
+            imgio.imwrite(basename[:-4] + ".pgm", raw, maxval, verbose=True)
+    else:
+        raw, maxval = imgio.imread(infilename, config.width, config.height, config.bpp)
+
     height, width = raw.shape[:2]
     cropRow = np.index_exp[:-1, :]
     cropCol = np.index_exp[:, :-1]
@@ -194,7 +209,7 @@ def _main():
     argv.exitIfAnyUnparsedOptions()
 
     if len(sys.argv) < 2 or showHelp:
-        print("Usage: bayer2ppm [options] inputfile.[pgm|png] ...")
+        print("Usage: bayer2ppm [options] inputfile.[pgm|png|dng|raw] ...")
         print()
         print("  options:")
         print("    --bpp N                        bits per pixel (for .RAW only); default = None")
@@ -229,10 +244,10 @@ def _main():
         _enforce(len(ccmfiles) > 0, "CCM file %s not found. Terminating."%(config.ccmfile))
         config.ccm = np.genfromtxt(config.ccmfile, delimiter=",")
 
-    filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".raw"], sort=True, allowAllCaps=True)
+    filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".dng", ".raw"], sort=True, allowAllCaps=True)
     arguments = [(config, filename) for filename in filenames]
     numFiles = len(filenames)
-    _enforce(numFiles > 0, "No valid raw Bayer PGM/PNG/RAW files to process. Terminating.")
+    _enforce(numFiles > 0, "No valid raw Bayer PGM/PNG/DNG/RAW files to process. Terminating.")
     signal.signal(signal.SIGINT, lambda s, f: _onExit())  # Ctrl+C handler
     ncpu = multiproc.cpu_count()
     nproc = max(1, int(ncpu / 2))
