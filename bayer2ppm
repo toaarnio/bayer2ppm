@@ -58,26 +58,38 @@ def bayer2ppm(config, infilename, outfilename):
     tStart = t0 = time.time()
     basename = os.path.basename(infilename)
     filetype = basename.rsplit('.', 1)[-1]
-    outbpp = config.outbpp
-    blackLevel = config.blackLevel
-    whiteLevel = config.whiteLevel
-    bayerPattern = config.bayerPattern
 
-    if filetype.lower() == "dng":
+    if filetype.lower() in ["dng", "nef", "cr2"]:
         dng = rawpy.imread(infilename)
         raw = dng.raw_image_visible.copy()
         bpp = np.log2(np.max(raw))
         maxval = 2 ** int(np.ceil(bpp)) - 1
         if config.debug:
-            rgb = dng.postprocess(output_bps=16, use_camera_wb=True)
-            imgio.imwrite(basename[:-4] + ".pgm", raw, maxval, verbose=True)
-            imgio.imwrite(basename[:-4] + ".pnm", rgb, 65535, verbose=True)
+            rgb = dng.postprocess(use_camera_wb=True, highlight_mode=rawpy.HighlightMode.Clip, output_bps=16)
+            imgio.imwrite(basename[:-4] + ".pnm", rgb, 65535, verbose=False)
+            bayerMap = {0:'R', 1:'G', 2:'B'}
+            rawPattern = [bayerMap[ch] for ch in dng.raw_pattern.flatten()]
+            config.bayerPattern = ''.join(rawPattern)  # [0 1 1 2] ==> "RGGB"
+            config.wb = (dng.camera_whitebalance[0], dng.camera_whitebalance[2])  # pick r & b
+            ccm1 = dng.color_matrix[:, :3]   # 3 x 4 => 3 x 3, drop zero column
+            ccm2 = dng.rgb_xyz_matrix[:3, :]  # 4 x 3 ==> 3 x 3, drop zero row
+            config.ccm = ccm1 if np.any(ccm1) else ccm2  # one or the other is always zero (it seems)
+            config.ccmfile = f"from {basename}"
+            config.blackLevel = dng.black_level_per_channel[0]  # assume all channels are equal
+            cwb = np.array(dng.camera_whitebalance)[:3]
+            config.wb = list(cwb[[0,2]])
+            _enforce(np.any(config.ccm), f"CCM must not be all-zero")
     elif filetype.lower() == "raw":
         raw, maxval = imgio.imread(infilename, config.width, config.height, config.bpp)
         if config.debug:
             imgio.imwrite(basename[:-4] + ".pgm", raw, maxval, verbose=True)
     else:
         raw, maxval = imgio.imread(infilename, config.width, config.height, config.bpp)
+
+    outbpp = config.outbpp
+    blackLevel = config.blackLevel
+    whiteLevel = config.whiteLevel
+    bayerPattern = config.bayerPattern
 
     height, width = raw.shape[:2]
     cropRow = np.index_exp[:-1, :]
@@ -148,7 +160,7 @@ def bayer2ppm(config, infilename, outfilename):
         t0 = time.time()
         raw = raw.astype(np.float32)
         raw = isptools.gamma(raw, maxval, config.gamma)
-        print("%8.2f ms - applying gamma correction (%s)"%(elapsed(t0), config.gamma))
+        print("%8.2f ms - applying gamma curve (%s)"%(elapsed(t0), config.gamma))
 
     if outbpp is not None and maxval != (2**outbpp - 1):
         t0 = time.time()
@@ -244,7 +256,7 @@ def _main():
         _enforce(len(ccmfiles) > 0, "CCM file %s not found. Terminating."%(config.ccmfile))
         config.ccm = np.genfromtxt(config.ccmfile, delimiter=",")
 
-    filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".dng", ".raw"], sort=True, allowAllCaps=True)
+    filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".dng", ".nef", ".raw", ".cr2"], sort=True, allowAllCaps=True)
     arguments = [(config, filename) for filename in filenames]
     numFiles = len(filenames)
     _enforce(numFiles > 0, "No valid raw Bayer PGM/PNG/DNG/RAW files to process. Terminating.")
