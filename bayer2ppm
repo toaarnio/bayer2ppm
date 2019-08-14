@@ -22,6 +22,7 @@ import time             # built-in library
 import numpy as np      # pip install numpy
 import rawpy            # pip install rawpy
 import imgio            # pip install imgio
+import cv2              # pip install opencv-python
 import argv             # local import: argv.py
 import isptools         # local import: isptools.py
 import demosaic         # local import: demosaic.py
@@ -29,6 +30,7 @@ import demosaic         # local import: demosaic.py
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'multiproc'))
 
 import multiproc        # submodule import: multiproc.py
+
 
 class ISPConfig(object):
     def __init__(self):
@@ -64,25 +66,16 @@ def bayer2ppm(config, infilename, outfilename):
         raw = dng.raw_image_visible.copy()
         bpp = np.log2(np.max(raw))
         maxval = 2 ** int(np.ceil(bpp)) - 1
-        if config.debug:
-            rgb = dng.postprocess(use_camera_wb=True, highlight_mode=rawpy.HighlightMode.Clip, output_bps=16)
-            imgio.imwrite(basename[:-4] + ".pnm", rgb, 65535, verbose=False)
-            bayerMap = {0:'R', 1:'G', 2:'B'}
-            rawPattern = [bayerMap[ch] for ch in dng.raw_pattern.flatten()]
-            config.bayerPattern = ''.join(rawPattern)  # [0 1 1 2] ==> "RGGB"
-            config.wb = (dng.camera_whitebalance[0], dng.camera_whitebalance[2])  # pick r & b
-            ccm1 = dng.color_matrix[:, :3]   # 3 x 4 => 3 x 3, drop zero column
-            ccm2 = dng.rgb_xyz_matrix[:3, :]  # 4 x 3 ==> 3 x 3, drop zero row
-            config.ccm = ccm1 if np.any(ccm1) else ccm2  # one or the other is always zero (it seems)
-            config.ccmfile = f"from {basename}"
-            config.blackLevel = dng.black_level_per_channel[0]  # assume all channels are equal
-            cwb = np.array(dng.camera_whitebalance)[:3]
-            config.wb = list(cwb[[0,2]])
-            _enforce(np.any(config.ccm), f"CCM must not be all-zero")
-    elif filetype.lower() == "raw":
-        raw, maxval = imgio.imread(infilename, config.width, config.height, config.bpp)
-        if config.debug:
-            imgio.imwrite(basename[:-4] + ".pgm", raw, maxval, verbose=True)
+        rawPattern = [chr(dng.color_desc[ch]) for ch in dng.raw_pattern.flatten()]
+        config.bayerPattern = ''.join(rawPattern)  # [0 1 3 2] ==> "RGGB"
+        config.wb = (dng.camera_whitebalance[0], dng.camera_whitebalance[2])  # pick r & b
+        ccm1 = dng.color_matrix[:, :3]   # 3 x 4 => 3 x 3, drop zero column
+        ccm2 = dng.rgb_xyz_matrix[:3, :]  # 4 x 3 ==> 3 x 3, drop zero row
+        config.ccm = ccm1 if np.any(ccm1) else ccm2  # one or the other is always zero (it seems)
+        config.ccmfile = f"from {basename}"
+        config.blackLevel = dng.black_level_per_channel[0]  # assume all channels are equal
+        _assert(np.all(np.array(dng.black_level_per_channel) == config.blackLevel), "Per-channel black levels are not supported.")
+        _assert(np.any(config.ccm), "CCM must not be all-zero.")
     else:
         raw, maxval = imgio.imread(infilename, config.width, config.height, config.bpp)
 
@@ -90,7 +83,6 @@ def bayer2ppm(config, infilename, outfilename):
     blackLevel = config.blackLevel
     whiteLevel = config.whiteLevel
     bayerPattern = config.bayerPattern
-
     height, width = raw.shape[:2]
     cropRow = np.index_exp[:-1, :]
     cropCol = np.index_exp[:, :-1]
@@ -99,6 +91,33 @@ def bayer2ppm(config, infilename, outfilename):
     height, width = raw.shape[:2]
     bpp = np.log2(maxval + 1)
     print("%8.2f ms - reading input file: %d x %d, %d bpp"%(elapsed(t0), width, height, bpp))
+
+    if filetype.lower() in ["dng", "nef", "cr2"]:
+        if config.debug:
+            t0 = time.time()
+            rgb = dng.postprocess(use_camera_wb=True,
+                                  half_size=False,
+                                  no_auto_bright=True,
+                                  highlight_mode=rawpy.HighlightMode.Clip,
+                                  output_color=rawpy.ColorSpace.sRGB,
+                                  output_bps=16,
+                                  gamma=(1,1))
+            print("%8.2f ms - demosaicing (RawPy, %s)"%(elapsed(t0), bayerPattern))
+            t0 = time.time()
+            srgb = rgb / 65535.0
+            tonemap = cv2.createTonemapReinhard(gamma=1.0, intensity=0.0, light_adapt=0.0, color_adapt=0.0)
+            srgb = tonemap.process(srgb.astype(np.float32))
+            print("%8.2f ms - tonemapping (Reinhard)"%(elapsed(t0)))
+            t0 = time.time()
+            srgb = np.clip(srgb, 0.0, 1.0)
+            srgb = isptools.gamma(srgb, 1.0, config.gamma)
+            print("%8.2f ms - applying gamma curve (%s)"%(elapsed(t0), config.gamma))
+            t0 = time.time()
+            srgb = ((srgb * maxval) + 0.5).astype(np.uint16)
+            pnmfilename = basename[:-4] + ".pnm"
+            imgio.imwrite(pnmfilename, srgb, maxval, verbose=False)
+            print("%8.2f ms - writing output file: %d x %d, %d bpp [%s]"%(elapsed(t0), width, height, bpp, pnmfilename))
+            print("%8.2f ms - TOTAL [RawPy]"%(elapsed(tStart)))
 
     if isinstance(config.blackLevel, str):  # dtype: <unchanged>
         t0 = time.time()
@@ -129,6 +148,7 @@ def bayer2ppm(config, infilename, outfilename):
         t0 = time.time()
         (gr, gb) = (config.gic, 1.00) if config.gic else (1.0, 1.0)
         (r, b) = config.wb if config.wb is not None else (1.0, 1.0)
+        (r, b) = (r / 1024, b / 1024) if r >= 1024 else (r, b)
         if bayerPattern == "RGGB":
             (c1, c2, c3, c4) = (r, gr, gb, b)
         elif bayerPattern == "BGGR":
@@ -181,7 +201,7 @@ def bayer2ppm(config, infilename, outfilename):
         t0 = time.time()
         raw = np.clip(raw, 0, maxval)
         imgio.imwrite(outfilename, raw, maxval)
-        print("%8.2f ms - writing demosaiced RGB to %s file"%(elapsed(t0), config.outformat.upper()))
+        print("%8.2f ms - writing output file: %d x %d, %d bpp [%s]"%(elapsed(t0), width, height, bpp, outfilename))
 
     print("%8.2f ms - TOTAL\n"%(elapsed(tStart)))
 
@@ -189,20 +209,30 @@ def bayer2ppm(config, infilename, outfilename):
 class TerminationRequest(IOError):
     pass
 
+
 def _onExit():
     raise TerminationRequest("Terminated by the user.")
 
-def _enforce(expression, messageIfFalse):
+
+def _assert(expression, message_if_false):
     if not expression:
-        print(messageIfFalse)
+        print(message_if_false)
+        raise AssertionError(message_if_false)
+
+
+def _enforce(expression, message_if_false):
+    if not expression:
+        print(message_if_false)
         sys.exit(-1)
+
 
 def _process(config, infilespec):
     infilename = os.path.basename(infilespec)
     outfilename = infilename.rsplit('.', 1)[0] + "." + config.outformat
     bayer2ppm(config, infilespec, outfilename)
 
-def _main():
+
+def main():
     config = ISPConfig()
     config.width, config.height = argv.intpair("--size")
     config.bpp = argv.intval("--bpp", default=None, accepted=[8, 10, 12, 14, 16])
@@ -264,6 +294,7 @@ def _main():
     ncpu = multiproc.cpu_count()
     nproc = max(1, int(ncpu / 2))
     print("Processing %d image(s) using up to %d concurrent processes..."%(numFiles, nproc))
+    exitcode = -1
     try:
         t0 = time.time()
         multiproc.run(_process, arguments, nproc, raise_exceptions=True)
@@ -271,14 +302,17 @@ def _main():
         perFile = float(elapsed) / numFiles * 1000
         if numFiles > 1:
             print("Processed %d files in %.1f seconds (%d ms per file)"%(numFiles, elapsed, perFile))
+        exitcode = 0
     except BaseException as e:
         if config.verbose:
             import traceback
             traceback.print_exc()
         else:
-            print(e)
+            print(f"{e.__class__.__name__}: {e}")
     finally:
         signal.signal(signal.SIGINT, signal.SIG_DFL)
+        sys.exit(exitcode)
+
 
 if __name__ == "__main__":
-    _main()
+    main()
