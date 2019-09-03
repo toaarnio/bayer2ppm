@@ -25,7 +25,6 @@ import imgio            # pip install imgio
 import cv2              # pip install opencv-python
 import argv             # local import: argv.py
 import isptools         # local import: isptools.py
-import demosaic         # local import: demosaic.py
 
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'multiproc'))
 
@@ -34,17 +33,18 @@ import multiproc        # submodule import: multiproc.py
 
 class ISPConfig(object):
     def __init__(self):
+        self.dng = None               # None | <rawpy.RawPy>
         self.width = None             # None | <uint>
         self.height = None            # None | <uint>
         self.bpp = None               # None | <uint>
         self.blackLevel = None        # AUTO | <float>
         self.whiteLevel = None        # AUTO | MAX | <float>
         self.bayerPattern = None      # RGGB | GBRG | BGGR | GRBG
-        self.gic = None               # None | <float>
         self.wb = None                # None | tuple(<float>, <float>)
         self.wp = None                # None | tuple(<float>, <float>, <float>)
         self.ccmfile = None           # None | <string>
         self.ccm = None               # None | <float3x3>
+        self.tonemap = None           # None | <string>
         self.gamma = None             # None | sRGB | rec709
         self.outbpp = None            # None | <uint>
         self.verbose = None           # True | False
@@ -59,26 +59,11 @@ def bayer2ppm(config, infilename, outfilename):
     elapsed = lambda t0: (time.time() - t0) * 1000
     tStart = t0 = time.time()
     basename = os.path.basename(infilename)
-    filetype = basename.rsplit('.', 1)[-1]
-
-    if filetype.lower() in ["dng", "nef", "cr2"]:
-        dng = rawpy.imread(infilename)
-        raw = dng.raw_image_visible.copy()
-        bpp = np.log2(np.max(raw))
-        maxval = 2 ** int(np.ceil(bpp)) - 1
-        rawPattern = [chr(dng.color_desc[ch]) for ch in dng.raw_pattern.flatten()]
-        config.bayerPattern = ''.join(rawPattern)  # [0 1 3 2] ==> "RGGB"
-        config.wb = (dng.camera_whitebalance[0], dng.camera_whitebalance[2])  # pick r & b
-        ccm1 = dng.color_matrix[:, :3]   # 3 x 4 => 3 x 3, drop zero column
-        ccm2 = dng.rgb_xyz_matrix[:3, :]  # 4 x 3 ==> 3 x 3, drop zero row
-        config.ccm = ccm1 if np.any(ccm1) else ccm2  # one or the other is always zero (it seems)
-        config.ccmfile = f"from {basename}"
-        config.blackLevel = dng.black_level_per_channel[0]  # assume all channels are equal
-        _assert(np.all(np.array(dng.black_level_per_channel) == config.blackLevel), "Per-channel black levels are not supported.")
-        _assert(np.any(config.ccm), "CCM must not be all-zero.")
-    else:
-        raw, maxval = imgio.imread(infilename, config.width, config.height, config.bpp)
-
+    filetype = basename.rsplit('.', 1)[-1].lower()
+    is_dng = filetype in ["dng", "nef", "cr2"]
+    read_dng = lambda: dng_read(config, infilename)
+    read_raw = lambda: imgio.imread(infilename, config.width, config.height, config.bpp)
+    raw, maxval = read_dng() if is_dng else read_raw()
     outbpp = config.outbpp
     blackLevel = config.blackLevel
     whiteLevel = config.whiteLevel
@@ -90,34 +75,25 @@ def bayer2ppm(config, infilename, outfilename):
     raw = raw[cropCol] if (width % 2) != 0 else raw   # must have even number of columns
     height, width = raw.shape[:2]
     bpp = np.log2(maxval + 1)
-    print("%8.2f ms - reading input file: %d x %d, %d bpp"%(elapsed(t0), width, height, bpp))
+    print("%8.2f ms - reading input file: %d x %d, %d bpp; range = [%.2f, %.2f]"%(elapsed(t0), width, height, bpp, np.min(raw), np.max(raw)))
 
-    if filetype.lower() in ["dng", "nef", "cr2"]:
+    if is_dng:
         if config.debug:
             t0 = time.time()
-            rgb = dng.postprocess(use_camera_wb=True,
-                                  half_size=False,
-                                  no_auto_bright=True,
-                                  highlight_mode=rawpy.HighlightMode.Clip,
-                                  output_color=rawpy.ColorSpace.sRGB,
-                                  output_bps=16,
-                                  gamma=(1,1))
-            print("%8.2f ms - demosaicing (RawPy, %s)"%(elapsed(t0), bayerPattern))
-            t0 = time.time()
-            srgb = rgb / 65535.0
-            tonemap = cv2.createTonemapReinhard(gamma=1.0, intensity=0.0, light_adapt=0.0, color_adapt=0.0)
-            srgb = tonemap.process(srgb.astype(np.float32))
-            print("%8.2f ms - tonemapping (Reinhard)"%(elapsed(t0)))
-            t0 = time.time()
-            srgb = np.clip(srgb, 0.0, 1.0)
-            srgb = isptools.gamma(srgb, 1.0, config.gamma)
-            print("%8.2f ms - applying gamma curve (%s)"%(elapsed(t0), config.gamma))
-            t0 = time.time()
-            srgb = ((srgb * maxval) + 0.5).astype(np.uint16)
+            rgb = config.dng.postprocess(use_camera_wb=True,
+                                         half_size=False,
+                                         no_auto_bright=True,
+                                         highlight_mode=rawpy.HighlightMode.Clip,
+                                         output_color=rawpy.ColorSpace.raw,
+                                         output_bps=16,
+                                         gamma=(1,1))
+            print("%8.2f ms - demosaicing [RawPy, %s]"%(elapsed(t0), bayerPattern))
+            rgb = ((rgb * maxval) + 0.5).astype(np.uint16)
             pnmfilename = basename[:-4] + ".pnm"
-            imgio.imwrite(pnmfilename, srgb, maxval, verbose=False)
+            imgio.imwrite(pnmfilename, rgb, maxval, verbose=False)
             print("%8.2f ms - writing output file: %d x %d, %d bpp [%s]"%(elapsed(t0), width, height, bpp, pnmfilename))
             print("%8.2f ms - TOTAL [RawPy]"%(elapsed(tStart)))
+            return
 
     if isinstance(config.blackLevel, str):  # dtype: <unchanged>
         t0 = time.time()
@@ -135,61 +111,91 @@ def bayer2ppm(config, infilename, outfilename):
             whiteLevel = isptools.whitelevel(raw, max_outliers=100)
             print("%8.2f ms - estimating white level: %d"%(elapsed(t0), whiteLevel))
 
-    if blackLevel > 0 or whiteLevel < maxval:  # dtype: uint16 / float32 ==> float32
+    if raw.dtype != np.float32:  # dtype: uint ==> float32, no clipping
         t0 = time.time()
+        dtype = raw.dtype
         raw = raw.astype(np.float32)
+        print("%8.2f ms - converting from %s to %s"%(elapsed(t0), dtype, raw.dtype))
+
+    if maxval != 1.0:  # dtype: float32 ==> float32, normalize to [0, 1]
+        t0 = time.time()
         raw = np.clip(raw, blackLevel, whiteLevel)
-        raw = raw - blackLevel
-        scale = maxval / float(whiteLevel - blackLevel)
-        raw = raw * scale
-        print("%8.2f ms - rescaling from [%.2f, %.2f] to [0, %d]"%(elapsed(t0), blackLevel, whiteLevel, maxval))
+        raw -= blackLevel
+        raw /= whiteLevel - blackLevel
+        overflow_raw = (raw >= 1.0)
+        print("%8.2f ms - rescaling from [%.2f, %.2f] to [0, 1]"%(elapsed(t0), blackLevel, whiteLevel))
 
-    if config.gic or config.wb:  # dtype: uint16 / float32 ==> float32
+    if is_dng:
         t0 = time.time()
-        (gr, gb) = (config.gic, 1.00) if config.gic else (1.0, 1.0)
-        (r, b) = config.wb if config.wb is not None else (1.0, 1.0)
-        (r, b) = (r / 1024, b / 1024) if r >= 1024 else (r, b)
-        if bayerPattern == "RGGB":
-            (c1, c2, c3, c4) = (r, gr, gb, b)
-        elif bayerPattern == "BGGR":
-            (c1, c2, c3, c4) = (b, gb, gr, r)
-        elif bayerPattern == "GBRG":
-            (c1, c2, c3, c4) = (gb, b, r, gr)
-        elif bayerPattern == "GRBG":
-            (c1, c2, c3, c4) = (gr, r, b, gb)
-        raw = raw.astype(np.float32)
-        raw[0::2, 0::2] *= c1
-        raw[0::2, 1::2] *= c2
-        raw[1::2, 0::2] *= c3
-        raw[1::2, 1::2] *= c4
-        print("%8.2f ms - applying per-channel gains: [R=%.3f, Gr=%.3f, Gb=%.3f, B=%.3f]"%(elapsed(t0), r, gr, gb, b))
+        config.dng.raw_image_visible[:] = (raw * maxval).astype(config.dng.raw_image_visible.dtype)
+        algo = rawpy.DemosaicAlgorithm.DHT
+        raw = config.dng.postprocess(no_auto_bright=True,
+                                     no_auto_scale=True,
+                                     use_camera_wb=False,
+                                     user_wb=[1.0, 1.0, 1.0, 1.0],
+                                     user_black=0,
+                                     user_sat=maxval,
+                                     highlight_mode=rawpy.HighlightMode.Ignore,
+                                     demosaic_algorithm=algo,
+                                     output_color=rawpy.ColorSpace.raw,
+                                     output_bps=16,
+                                     gamma=(1,1))
+        raw = raw / maxval
+        overflow_demosaic = (raw >= 1.0)
+        print("%8.2f ms - demosaicing [%s, %s]; range = [%.2f, %.2f]"%(elapsed(t0), str(algo).split('.')[-1], bayerPattern, np.min(raw), np.max(raw)))
+    else:  # Edge Aware Demosaicing (EAD)
+        t0 = time.time()
+        bayer_to_cv2 = { "RGGB": cv2.COLOR_BAYER_BG2RGB_EA,
+                         "GBRG": cv2.COLOR_BAYER_GR2RGB_EA,
+                         "BGGR": cv2.COLOR_BAYER_RG2RGB_EA,
+                         "GRBG": cv2.COLOR_BAYER_GB2RGB_EA }
+        raw = (raw * maxval).astype(np.uint16)
+        raw = cv2.cvtColor(raw, bayer_to_cv2[bayerPattern.upper()])
+        raw = raw / maxval
+        overflow_demosaic = (raw >= 1.0)
+        print("%8.2f ms - demosaicing [Malvar, %s]; range = [%.2f, %.2f]"%(elapsed(t0), bayerPattern, np.min(raw), np.max(raw)))
 
-    if config.demosaic:
+    if config.wb is not None:
         t0 = time.time()
-        raw = raw.astype(np.float32)
-        raw = demosaic.demosaic(raw, pattern=bayerPattern.lower(), method='hq_linear', clip=(0, maxval))
-        print("%8.2f ms - demosaicing (high quality, %s)"%(elapsed(t0), bayerPattern))
+        (r, b) = config.wb
+        raw[..., 0] *= r
+        raw[..., 2] *= b
+        overflow_wb = (raw >= 1.0)
+        print("%8.2f ms - applying WB gains: [R=%.3f, G=1.000, B=%.3f]; range = [%.2f, %.2f]"%(elapsed(t0), r, b, np.min(raw), np.max(raw)))
 
-    if config.ccm is not None:
+    if config.ccm is not None:  # dtype: float64 ==> float64, no clipping
         t0 = time.time()
+        raw = np.clip(raw, 0, 1)  # clip to avoid pink sky (due to <1.0 coefficients)
         raw = np.dot(raw, config.ccm.T)
-        raw = np.clip(raw, 0, maxval)
-        print("%8.2f ms - applying CCM [%s]"%(elapsed(t0), config.ccmfile))
+        overflow_ccm = (raw >= 1.0)
+        print("%8.2f ms - applying CCM [%s]; range = [%.2f, %.2f]"%(elapsed(t0), config.ccmfile, np.min(raw), np.max(raw)))
 
-    if config.gamma is not None:  # sRGB | rec709 | None
+    if config.tonemap is not None:  # dtype: float64 ==> float32, remap to [0, 1]
         t0 = time.time()
-        raw = raw.astype(np.float32)
-        raw = isptools.gamma(raw, maxval, config.gamma)
-        print("%8.2f ms - applying gamma curve (%s)"%(elapsed(t0), config.gamma))
+        raw = np.maximum(raw, 0)      # OpenCV/Reinhard tonemapping cannot handle negative values
+        raw = raw.astype(np.float32)  # OpenCV/Reinhard requires float32, cannot handle float64
+        tonemap = cv2.createTonemapReinhard(gamma=1.0, intensity=0.0, light_adapt=0.0, color_adapt=0.0)
+        raw = tonemap.process(raw)    # [0, N] ==> [0, 1]
+        print("%8.2f ms - tonemapping [%s]; range = [%.2f, %.2f]"%(elapsed(t0), config.tonemap, np.min(raw), np.max(raw)))
 
-    if outbpp is not None and maxval != (2**outbpp - 1):
+    if config.gamma is not None:  # dtype: float ==> float64
+        t0 = time.time()
+        raw = isptools.gamma(raw, config.gamma)  # sRGB | rec709 | None
+        print("%8.2f ms - applying gamma curve [%s]"%(elapsed(t0), config.gamma))
+
+    if maxval != 1.0:  # clip & rescale back to [0, maxval]
+        t0 = time.time()
+        raw = np.clip(raw * maxval, 0, maxval)
+        print("%8.2f ms - clipping & rescaling to [0, %d]"%(elapsed(t0), maxval))
+
+    if outbpp is not None and maxval != (2**outbpp - 1):  # dtype: float32 ==> float64
         t0 = time.time()
         newmaxval = 2**outbpp - 1
         raw = isptools.quantize(raw, maxval, newmaxval)
         maxval = newmaxval
         print("%8.2f ms - converting from %d bpp to %d bpp"%(elapsed(t0), bpp, outbpp))
 
-    if raw.dtype not in [np.uint8, np.uint16]:
+    if raw.dtype not in [np.uint8, np.uint16]:  # dtype: float ==> uint
         t0 = time.time()
         oldtype = raw.dtype
         newtype = 'uint8' if maxval <= 255 else 'uint16'
@@ -201,9 +207,38 @@ def bayer2ppm(config, infilename, outfilename):
         t0 = time.time()
         raw = np.clip(raw, 0, maxval)
         imgio.imwrite(outfilename, raw, maxval)
+        #raw[..., :] = np.mean(raw, axis=2, keepdims=True)  # black & white image for overflow markers
+        #raw[overflow_ccm] = [0, 0, maxval]       # BLUE ==> overflow due to CCM (but not in raw/wb/demosaic)
+        #raw[overflow_demosaic] = [0, maxval, 0]  # GREEN ==> overflow due to demosaic (+later, but not in raw/wb)
+        #raw[overflow_wb] = [maxval, 0, 0]        # RED ==> overflow due to WB gains (+later, but not in raw)
+        #raw[overflow_raw] = [maxval, 0, maxval]  # MAGENTA ==> overflow in original raw data (+later)
+        #pinksky_mask = np.any(overflow_demosaic & ~overflow_ccm, axis=2)
+        #raw[pinksky_mask] = [maxval, 0, maxval]
+        #imgio.imwrite("overflow.ppm", raw, maxval)
         print("%8.2f ms - writing output file: %d x %d, %d bpp [%s]"%(elapsed(t0), width, height, bpp, outfilename))
 
     print("%8.2f ms - TOTAL\n"%(elapsed(tStart)))
+
+
+def dng_read(config, infilename):
+    config.dng = dng = rawpy.imread(infilename)
+    raw = dng.raw_image_visible.copy()
+    bpp = np.log2(np.max(raw))
+    maxval = 2 ** int(np.ceil(bpp)) - 1
+    rawPattern = [chr(dng.color_desc[ch]) for ch in dng.raw_pattern.flatten()]
+    config.bayerPattern = ''.join(rawPattern)  # [0 1 3 2] ==> "RGGB"
+    if config.wb is None:
+        config.wb = np.array(dng.camera_whitebalance)[[0, 2]]  # pick r & b, drop gr & gb
+        config.wb = config.wb / 1024 if np.any(config.wb >= 1024) else config.wb
+    if config.ccm is None:
+        ccm1 = dng.color_matrix[:, :3]   # 3 x 4 => 3 x 3, drop zero column
+        ccm2 = dng.rgb_xyz_matrix[:3, :]  # 4 x 3 ==> 3 x 3, drop zero row
+        config.ccm = ccm1 if np.any(ccm1) else ccm2  # one or the other is always zero (it seems)
+        config.ccmfile = "from DNG metadata"
+    config.blackLevel = np.mean(dng.black_level_per_channel)  # take the average of per-channel black levels
+    _check(np.all(np.array(dng.black_level_per_channel) == config.blackLevel), "Per-channel black levels are not supported; using their average instead.")
+    _assert(np.any(config.ccm), "CCM must not be all-zero.")
+    return raw, maxval
 
 
 class TerminationRequest(IOError):
@@ -216,8 +251,12 @@ def _onExit():
 
 def _assert(expression, message_if_false):
     if not expression:
-        print(message_if_false)
         raise AssertionError(message_if_false)
+
+
+def _check(expression, message_if_false):
+    if not expression:
+        print(message_if_false)
 
 
 def _enforce(expression, message_if_false):
@@ -239,10 +278,10 @@ def main():
     config.bayerPattern = argv.stringval("--bayer", default="RGGB", accepted=["RGGB", "GBRG", "BGGR", "GRBG"])
     config.blackLevel = argv.floatstring("--blacklevel", default="AUTO", accepted=["AUTO"])
     config.whiteLevel = argv.floatstring("--whitelevel", default="MAX", accepted=["AUTO", "MAX"])
-    config.gic = argv.floatval("--gic")
     config.wb = argv.floatpair("--wb")
     config.wp = argv.floattriple("--wp")
     config.ccmfile = argv.stringval("--ccm", default=None)
+    config.tonemap = "Reinhard" if argv.exists("--tonemap") else None
     config.gamma = argv.stringval("--gamma", default=None, accepted=["rec709", "sRGB"])
     config.outbpp = argv.intval("--outbpp", default=None, accepted=[8, 10, 12, 14, 16])
     config.verbose = argv.exists("--verbose")
@@ -259,10 +298,10 @@ def main():
         print("    --bayer RGGB|GBRG|BGGR|GRBG    Bayer order of input file; default = RGGB")
         print("    --blacklevel N|AUTO            pixel value to subtract from all pixels; default = AUTO")
         print("    --whitelevel N|AUTO|MAX        pixel value to consider fully saturated; default = MAX")
-        print("    --gic F                        multiply Gr pixels by F to fix green imbalance; default = 1.000")
         print("    --wb R B                       multiply R and B pixels by the given factors; default = 1.0 1.0")
         print("    --wp R G B                     alternative way to specify WB gains; equivalent to '--wb G/R G/B'")
         print("    --ccm filename.csv             load 3 x 3 color correction matrix from CSV file; default = None")
+        print("    --tonemap                      apply tonemapping using Reinhard's algorithm; default = None")
         print("    --gamma sRGB|rec709            apply gamma according to sRGB or rec709; default = None")
         print("    --outbpp N                     output bit depth (None = keep original); default = None")
         print("    --debug                        write unprocessed data to disk as .PGM (for .RAW only)")

@@ -46,13 +46,12 @@ def quantize(frame, maxval=65535, newmaxval=1023):
         frame = frame * scale  # frame.dtype is now np.float64
     return frame
 
-def gamma(frame, maxval, mode):  # mode = rec709 | sRGB | None
+def gamma(frame, mode):  # mode = rec709 | sRGB | None
     """
     Applies rec709 or sRGB gamma on the given frame, boosting especially the
     near-zero pixel values. If mode is None, the frame is returned untouched.
     """
     if mode is not None:
-        frame = frame / float(maxval)
         if mode == "sRGB":
             srgb_lo = 12.92 * frame
             srgb_hi = 1.055 * np.power(frame, 1.0/2.4) - 0.055
@@ -62,16 +61,14 @@ def gamma(frame, maxval, mode):  # mode = rec709 | sRGB | None
             srgb_hi = 1.099 * np.power(frame, 0.45) - 0.099
             threshold_mask = (frame > 0.018)
         frame = srgb_hi * threshold_mask + srgb_lo * (~threshold_mask)
-        frame *= maxval
     return frame
 
-def degamma(frame, maxval, mode):  # mode = rec709 | sRGB | None
+def degamma(frame, mode):  # mode = rec709 | sRGB | None
     """
     Applies rec709 or sRGB inverse gamma on the given frame. If mode is None,
     the frame is returned untouched.
     """
     if mode is not None:
-        frame = frame / float(maxval)
         if mode == "sRGB":
             srgb_lo = frame / 12.92
             srgb_hi = np.power((frame + 0.055) / 1.055, 2.4)
@@ -81,5 +78,4 @@ def degamma(frame, maxval, mode):  # mode = rec709 | sRGB | None
             srgb_hi = np.power((frame + 0.099) / 1.099, 1/0.45)
             threshold_mask = (frame > 0.081)
         frame = srgb_hi * threshold_mask + srgb_lo * (~threshold_mask)
-        frame *= maxval
     return frame
