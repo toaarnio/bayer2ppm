@@ -155,7 +155,7 @@ def bayer2ppm(config, infilename, outfilename):
         raw = cv2.cvtColor(raw, bayer_to_cv2[bayerPattern.upper()])
         raw = raw / maxval
         overflow_demosaic = np.max(raw >= 1.0, axis=2)
-        print("%8.2f ms - demosaicing [Malvar, %s]; range = [%.2f, %.2f]"%(elapsed(t0), bayerPattern, np.min(raw), np.max(raw)))
+        print("%8.2f ms - demosaicing [EAD, %s]; range = [%.2f, %.2f]"%(elapsed(t0), bayerPattern, np.min(raw), np.max(raw)))
 
     if config.lsc is not None:
         t0 = time.time()
