@@ -79,24 +79,6 @@ def bayer2ppm(config, infilename, outfilename):
     bpp = np.log2(maxval + 1)
     print("%8.2f ms - reading input file: %d x %d, %d bpp; range = [%.2f, %.2f]"%(elapsed(t0), width, height, bpp, np.min(raw), np.max(raw)))
 
-    if is_dng:
-        if config.debug:
-            t0 = time.time()
-            rgb = config.dng.postprocess(use_camera_wb=True,
-                                         half_size=False,
-                                         no_auto_bright=True,
-                                         highlight_mode=rawpy.HighlightMode.Clip,
-                                         output_color=rawpy.ColorSpace.raw,
-                                         output_bps=16,
-                                         gamma=(1,1))
-            print("%8.2f ms - demosaicing [RawPy, %s]"%(elapsed(t0), bayerPattern))
-            rgb = ((rgb * maxval) + 0.5).astype(np.uint16)
-            pnmfilename = basename[:-4] + ".pnm"
-            imgio.imwrite(pnmfilename, rgb, maxval, verbose=False)
-            print("%8.2f ms - writing output file: %d x %d, %d bpp [%s]"%(elapsed(t0), width, height, bpp, pnmfilename))
-            print("%8.2f ms - TOTAL [RawPy]"%(elapsed(tStart)))
-            return
-
     if isinstance(config.blackLevel, str):  # dtype: <unchanged>
         t0 = time.time()
         if config.blackLevel == "AUTO":
@@ -216,15 +198,17 @@ def bayer2ppm(config, infilename, outfilename):
         t0 = time.time()
         raw = np.clip(raw, 0, maxval)
         imgio.imwrite(outfilename, raw, maxval)
-        #raw[..., :] = np.mean(raw, axis=2, keepdims=True)  # black & white image for overflow markers
-        #raw[overflow_ccm] = [0, 0, maxval]       # BLUE ==> overflow due to CCM (but not in raw/demosaic/lsc/wb)
-        #raw[overflow_wb] = [0, maxval, 0]        # GREEN ==> overflow due to LSC/WB gains (+later, but not in raw/demosaic)
-        #raw[overflow_demosaic] = [maxval, 0, 0]  # RED ==> overflow due to demosaic (+later, but not in raw)
-        #raw[overflow_raw] = [maxval, 0, maxval]  # MAGENTA ==> overflow in original raw data (+later)
-        #pinksky_mask = np.any(overflow_demosaic & ~overflow_ccm, axis=2)
-        #raw[pinksky_mask] = [maxval, 0, maxval]
-        #imgio.imwrite("overflow.ppm", raw, maxval)
         print("%8.2f ms - writing output file: %d x %d, %d bpp [%s]"%(elapsed(t0), width, height, bpp, outfilename))
+
+    if config.debug:
+        t0 = time.time()
+        raw[..., :] = np.mean(raw, axis=2, keepdims=True)  # black & white image for overflow markers
+        raw[overflow_ccm] = [maxval, 0, maxval]  # MAGENTA ==> overflow due to CCM (but not in raw/demosaic/lsc/wb)
+        raw[overflow_wb] = [0, 0, maxval]        # BLUE ==> overflow due to LSC/WB gains (but not in raw/demosaic)
+        raw[overflow_demosaic] = [0, maxval, 0]  # GREEN ==> overflow due to demosaicing (but not in raw)
+        raw[overflow_raw] = [maxval, 0, 0]       # RED ==> overflow in original raw data
+        imgio.imwrite("overflow.ppm", raw, maxval)
+        print("%8.2f ms - writing grayscale image with overflow markers [overflow.ppm]"%(elapsed(t0)))
 
     print("%8.2f ms - TOTAL\n"%(elapsed(tStart)))
 
