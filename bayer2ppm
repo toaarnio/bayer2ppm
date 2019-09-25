@@ -13,225 +13,136 @@ Converts Bayer raw PGM/PNG/RAW images into RGB PPM.
 # pylint: disable=too-many-statements
 # pylint: disable=too-few-public-methods
 
-from __future__ import print_function as __print  # hide from help
-
 import sys              # built-in library
 import os               # built-in library
 import signal           # built-in library
 import time             # built-in library
+import copy             # built-in library
+import pprint           # built-in library
 import numpy as np      # pip install numpy
-import rawpy            # pip install rawpy
+import imsize           # pip install imsize
 import imgio            # pip install imgio
-import cv2              # pip install opencv-python
+import rawpy            # pip install rawpy
+import rawpipe          # pip install rawpipe
 import argv             # local import: argv.py
-import isptools         # local import: isptools.py
-
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'multiproc'))
-
-import multiproc        # submodule import: multiproc.py
 
 
-class ISPConfig(object):
+class ISPConfig:
+
     def __init__(self):
-        self.dng = None               # None | <rawpy.RawPy>
         self.width = None             # None | <uint>
         self.height = None            # None | <uint>
+        self.maxval = None            # None | <uint>
         self.bpp = None               # None | <uint>
-        self.blackLevel = None        # AUTO | <float>
-        self.whiteLevel = None        # AUTO | MAX | <float>
-        self.lscfile = None           # None | <string>
-        self.lsc = None               # None | <floatMxNx3>
-        self.bayerPattern = None      # RGGB | GBRG | BGGR | GRBG
-        self.wb = None                # None | tuple(<float>, <float>)
-        self.wp = None                # None | tuple(<float>, <float>, <float>)
-        self.ccmfile = None           # None | <string>
+        self.blacklevel = None        # None | <float>
+        self.whitelevel = None        # None | <float>
+        self.bayer_pattern = None     # None | RGGB | GBRG | BGGR | GRBG
+        self.demosaic = True          # True | False
+        self.lsc = None               # None | <floatMxN> | <floatMxNx3>
+        self.wb = None                # None | <float2>
         self.ccm = None               # None | <float3x3>
-        self.tonemap = None           # None | <string>
-        self.gamma = None             # None | sRGB | rec709
-        self.outbpp = None            # None | <uint>
+        self.lscfile = None           # None | <filename>
+        self.wbfile = None            # None | <filename>
+        self.ccmfile = None           # None | <filename>
+        self.tonemap = None           # None | <filename>
+        self.gamma = None             # None | sRGB | rec709 | <filename>
         self.verbose = None           # True | False
         self.debug = None             # True | False
-        self.demosaic = True          # currently hardcoded
-        self.dryRun = False           # currently hardcoded
         self.outformat = "ppm"        # currently hardcoded
 
+    def __repr__(self):
+        classname = self.__class__
+        elements = self.__dict__
+        reprstr = f"<ISPConfig {self.__dict__}>"
+        return reprstr
 
-def bayer2ppm(config, infilename, outfilename):
-    print("Converting %s to %s..."%(infilename, config.outformat.upper()))
-    elapsed = lambda t0: (time.time() - t0) * 1000
+    def __str__(self):
+        infostr = pprint.pformat(self.__dict__)
+        return infostr
+
+
+def bayer2ppm(config, infilespec):
     tStart = t0 = time.time()
-    basename = os.path.basename(infilename)
-    filetype = basename.rsplit('.', 1)[-1].lower()
-    is_dng = filetype in ["dng", "nef", "cr2"]
-    read_dng = lambda: dng_read(config, infilename)
+    config = copy.copy(config)  # avoid modifying the original
+    infilename = os.path.basename(infilespec)
+    outfilename = infilename.rsplit('.', 1)[0] + "." + config.outformat
+    print(f"Converting {infilename} to {config.outformat.upper()}...")
+    imginfo = imsize.read(infilename)
+    config.width = config.width or imginfo.width
+    config.height = config.height or imginfo.height
+    config.bpp = config.bpp or imginfo.bitdepth
+    is_dng = imginfo.filetype in ["dng", "nef", "cr2"]
     read_raw = lambda: imgio.imread(infilename, config.width, config.height, config.bpp)
-    raw, maxval = read_dng() if is_dng else read_raw()
-    outbpp = config.outbpp
-    blackLevel = config.blackLevel
-    whiteLevel = config.whiteLevel
-    bayerPattern = config.bayerPattern
+    raw, config.maxval = read_dng(config, infilename) if is_dng else read_raw()
     height, width = raw.shape[:2]
-    cropRow = np.index_exp[:-1, :]
-    cropCol = np.index_exp[:, :-1]
-    raw = raw[cropRow] if (height % 2) != 0 else raw  # must have even number of rows
-    raw = raw[cropCol] if (width % 2) != 0 else raw   # must have even number of columns
-    height, width = raw.shape[:2]
-    bpp = np.log2(maxval + 1)
-    print("%8.2f ms - reading input file: %d x %d, %d bpp; range = [%.2f, %.2f]"%(elapsed(t0), width, height, bpp, np.min(raw), np.max(raw)))
-
-    if isinstance(config.blackLevel, str):  # dtype: <unchanged>
-        t0 = time.time()
-        if config.blackLevel == "AUTO":
-            blackLevel = isptools.blacklevel(raw, max_outliers=1000)
-        print("%8.2f ms - estimating black level: %.2f (%s)"%(elapsed(t0), blackLevel, config.blackLevel))
-        if blackLevel > maxval / 8.0:
-            print("%sWARNING: Estimated black level is very high. Is this a genuine raw image?"%(' ' * 14))
-
-    if isinstance(config.whiteLevel, str):  # dtype: <unchanged>
-        t0 = time.time()
-        if config.whiteLevel == "MAX":
-            whiteLevel = maxval
-        elif config.whiteLevel == "AUTO":
-            whiteLevel = isptools.whitelevel(raw, max_outliers=100)
-            print("%8.2f ms - estimating white level: %d"%(elapsed(t0), whiteLevel))
-
-    if raw.dtype != np.float32:  # dtype: uint ==> float32, no clipping
-        t0 = time.time()
-        dtype = raw.dtype
-        raw = raw.astype(np.float32)
-        print("%8.2f ms - converting from %s to %s"%(elapsed(t0), dtype, raw.dtype))
-
-    if maxval != 1.0:  # dtype: float32 ==> float32, normalize to [0, 1]
-        t0 = time.time()
-        raw = np.clip(raw, blackLevel, whiteLevel)
-        raw -= blackLevel
-        raw /= whiteLevel - blackLevel
-        overflow_raw = (raw >= 1.0)
-        print("%8.2f ms - rescaling from [%.2f, %.2f] to [0, 1]"%(elapsed(t0), blackLevel, whiteLevel))
-
-    if is_dng:
-        t0 = time.time()
-        config.dng.raw_image_visible[:] = (raw * maxval).astype(config.dng.raw_image_visible.dtype)
-        algo = rawpy.DemosaicAlgorithm.DHT
-        raw = config.dng.postprocess(no_auto_bright=True,
-                                     no_auto_scale=True,
-                                     use_camera_wb=False,
-                                     user_wb=[1.0, 1.0, 1.0, 1.0],
-                                     user_black=0,
-                                     user_sat=maxval,
-                                     highlight_mode=rawpy.HighlightMode.Ignore,
-                                     demosaic_algorithm=algo,
-                                     output_color=rawpy.ColorSpace.raw,
-                                     output_bps=16,
-                                     gamma=(1,1))
-        raw = raw / maxval
-        overflow_demosaic = np.max(raw >= 1.0, axis=2)
-        print("%8.2f ms - demosaicing [%s, %s]; range = [%.2f, %.2f]"%(elapsed(t0), str(algo).split('.')[-1], bayerPattern, np.min(raw), np.max(raw)))
-    else:  # Edge Aware Demosaicing (EAD)
-        t0 = time.time()
-        bayer_to_cv2 = { "RGGB": cv2.COLOR_BAYER_BG2RGB_EA,
-                         "GBRG": cv2.COLOR_BAYER_GR2RGB_EA,
-                         "BGGR": cv2.COLOR_BAYER_RG2RGB_EA,
-                         "GRBG": cv2.COLOR_BAYER_GB2RGB_EA }
-        raw = (raw * maxval).astype(np.uint16)
-        raw = cv2.cvtColor(raw, bayer_to_cv2[bayerPattern.upper()])
-        raw = raw / maxval
-        overflow_demosaic = np.max(raw >= 1.0, axis=2)
-        print("%8.2f ms - demosaicing [EAD, %s]; range = [%.2f, %.2f]"%(elapsed(t0), bayerPattern, np.min(raw), np.max(raw)))
-
-    if config.lsc is not None:
-        t0 = time.time()
-        need_resize = config.lsc.shape != raw.shape
-        lsc = cv2.resize(config.lsc, (width, height)) if need_resize else config.lsc
-        raw *= lsc
-        print("%8.2f ms - applying lens shading correction: range = [%.2f, %.2f]"%(elapsed(t0), np.min(raw), np.max(raw)))
-
-    if config.wb is not None:
-        t0 = time.time()
-        (r, b) = config.wb
-        raw[..., 0] *= r
-        raw[..., 2] *= b
-        overflow_wb = np.max(raw >= 1.0, axis=2)
-        print("%8.2f ms - applying WB gains: [R=%.3f, G=1.000, B=%.3f]; range = [%.2f, %.2f]"%(elapsed(t0), r, b, np.min(raw), np.max(raw)))
-
-    if config.ccm is not None:  # dtype: float64 ==> float64, no clipping
-        t0 = time.time()
-        raw = np.clip(raw, 0, 1)  # clip to avoid pink sky (due to <1.0 coefficients)
-        raw = np.dot(raw, config.ccm.T)
-        raw = np.maximum(raw, 0)      # tonemapping & gamma cannot handle negative values
-        overflow_ccm = np.max(raw >= 1.0, axis=2)
-        print("%8.2f ms - applying CCM [%s]; range = [%.2f, %.2f]"%(elapsed(t0), config.ccmfile, np.min(raw), np.max(raw)))
-
-    if config.tonemap is not None:  # dtype: float64 ==> float32, remap [0, N] ==> [0, 1]
-        t0 = time.time()
-        raw = raw.astype(np.float32)  # OpenCV/Reinhard requires float32, cannot handle float64
-        tonemap = cv2.createTonemapReinhard(gamma=1.0, intensity=0.0, light_adapt=0.0, color_adapt=0.0)
-        raw = tonemap.process(raw)
-        print("%8.2f ms - tonemapping [%s]; range = [%.2f, %.2f]"%(elapsed(t0), config.tonemap, np.min(raw), np.max(raw)))
-
-    if config.gamma is not None:  # dtype: float ==> float64
-        t0 = time.time()
-        raw = isptools.gamma(raw, config.gamma)  # sRGB | rec709 | None
-        print("%8.2f ms - applying gamma curve [%s]"%(elapsed(t0), config.gamma))
-
-    if maxval != 1.0:  # clip & rescale back to [0, maxval]
-        t0 = time.time()
-        raw = np.clip(raw * maxval, 0, maxval)
-        print("%8.2f ms - clipping & rescaling to [0, %d]"%(elapsed(t0), maxval))
-
-    if outbpp is not None and maxval != (2**outbpp - 1):  # dtype: float32 ==> float64
-        t0 = time.time()
-        newmaxval = 2**outbpp - 1
-        raw = isptools.quantize(raw, maxval, newmaxval)
-        maxval = newmaxval
-        print("%8.2f ms - converting from %d bpp to %d bpp"%(elapsed(t0), bpp, outbpp))
-
-    if raw.dtype not in [np.uint8, np.uint16]:  # dtype: float ==> uint
-        t0 = time.time()
-        oldtype = raw.dtype
-        newtype = 'uint8' if maxval <= 255 else 'uint16'
-        rounded = raw + 0.5
-        raw = rounded.astype(newtype)
-        print("%8.2f ms - converting from %s to %s"%(elapsed(t0), oldtype, newtype))
-
-    if not config.dryRun:
-        t0 = time.time()
-        raw = np.clip(raw, 0, maxval)
-        imgio.imwrite(outfilename, raw, maxval)
-        print("%8.2f ms - writing output file: %d x %d, %d bpp [%s]"%(elapsed(t0), width, height, bpp, outfilename))
-
-    if config.debug:
-        t0 = time.time()
-        raw[..., :] = np.mean(raw, axis=2, keepdims=True)  # black & white image for overflow markers
-        raw[overflow_ccm] = [maxval, 0, maxval]  # MAGENTA ==> overflow due to CCM (but not in raw/demosaic/lsc/wb)
-        raw[overflow_wb] = [0, 0, maxval]        # BLUE ==> overflow due to LSC/WB gains (but not in raw/demosaic)
-        raw[overflow_demosaic] = [0, maxval, 0]  # GREEN ==> overflow due to demosaicing (but not in raw)
-        raw[overflow_raw] = [maxval, 0, 0]       # RED ==> overflow in original raw data
-        imgio.imwrite("overflow.ppm", raw, maxval)
-        print("%8.2f ms - writing grayscale image with overflow markers [overflow.ppm]"%(elapsed(t0)))
-
-    print("%8.2f ms - TOTAL\n"%(elapsed(tStart)))
+    bpp = int(np.log2(config.maxval + 1))
+    raw = raw.astype(np.float32)
+    if config.verbose:
+        print(f"{_elapsed(t0)} - reading input file [{infilename}]: {width} x {height}, {bpp} bpp; range = [{np.min(raw)}, {np.max(raw)}]")
+    image = isp(config, raw)
+    t0 = time.time()
+    imgio.imwrite(outfilename, image, config.maxval)
+    if config.verbose:
+        print(f"{_elapsed(t0)} - writing output file [{outfilename}]: {width} x {height}, {bpp} bpp")
+        print(f"{_elapsed(tStart)} - TOTAL\n")
 
 
-def dng_read(config, infilename):
-    config.dng = dng = rawpy.imread(infilename)
-    raw = dng.raw_image_visible.copy()
+def read_dng(config, infilename):
+    dng = rawpy.imread(infilename)
+    raw = dng.raw_image.copy()  # NB: extracting the whole image, including metadata rows, black columns, etc.
     bpp = np.log2(np.max(raw))
     maxval = 2 ** int(np.ceil(bpp)) - 1
-    rawPattern = [chr(dng.color_desc[ch]) for ch in dng.raw_pattern.flatten()]
-    config.bayerPattern = ''.join(rawPattern)  # [0 1 3 2] ==> "RGGB"
-    if config.wb is None:
-        config.wb = np.array(dng.camera_whitebalance)[[0, 2]]  # pick r & b, drop gr & gb
-        config.wb = config.wb / 1024 if np.any(config.wb >= 1024) else config.wb
-    if config.ccm is None:
-        ccm1 = dng.color_matrix[:, :3]   # 3 x 4 => 3 x 3, drop zero column
-        ccm2 = dng.rgb_xyz_matrix[:3, :]  # 4 x 3 ==> 3 x 3, drop zero row
-        config.ccm = ccm1 if np.any(ccm1) else ccm2  # one or the other is always zero (it seems)
-        config.ccmfile = "from DNG metadata"
-    config.blackLevel = np.mean(dng.black_level_per_channel)  # take the average of per-channel black levels
-    _check(np.all(np.array(dng.black_level_per_channel) == config.blackLevel), "Per-channel black levels are not supported; using their average instead.")
+    raw_pattern = [chr(dng.color_desc[ch]) for ch in dng.raw_pattern.flatten()]
+    config.bayer_pattern = ''.join(raw_pattern)  # [0 1 3 2] ==> "RGGB"
+    config.wb = np.array(dng.camera_whitebalance)[[0, 2]]  # pick r & b, drop gr & gb
+    config.wb = config.wb / 1024 if np.any(config.wb >= 1024) else config.wb
+    ccm1 = dng.color_matrix[:, :3]   # 3 x 4 => 3 x 3, drop zero column
+    ccm2 = dng.rgb_xyz_matrix[:3, :]  # 4 x 3 ==> 3 x 3, drop zero row
+    config.ccm = ccm1 if np.any(ccm1) else ccm2.T  # one or the other is always zero (it seems)
+    config.blacklevel = np.mean(dng.black_level_per_channel)  # take the average of per-channel black levels
+    _check(np.all(np.array(dng.black_level_per_channel) == config.blacklevel), "Per-channel black levels are not supported; using their average instead.")
     _assert(np.any(config.ccm), "CCM must not be all-zero.")
     return raw, maxval
+
+
+def isp(config, img):
+    if not config.debug:
+        alg = rawpipe.Algorithms(config.verbose)
+        img = alg.linearize(img, config.blacklevel, config.whitelevel)
+        img = alg.demosaic(img, config.bayer_pattern)
+        img = alg.lsc(img, config.lsc)
+        img = alg.wb(img, config.wb)
+        img = alg.ccm(img, config.ccm)
+        img = alg.tonemap(img, config.tonemap)
+        img = alg.gamma(img, config.gamma)
+        img = alg.quantize(img, config.maxval, np.uint16)
+        return img
+    else:
+        alg = rawpipe.Algorithms(config.verbose)
+        img = alg.linearize(img, config.blacklevel, config.whitelevel)
+        overflow_raw = (img >= 1.0)
+        img = alg.demosaic(img, config.bayer_pattern)
+        overflow_demosaic = np.max(img >= 1.0, axis=2)
+        img = alg.lsc(img, config.lsc)
+        img = alg.wb(img, config.wb)
+        overflow_wb = np.max(img >= 1.0, axis=2)
+        img = alg.ccm(img, config.ccm)
+        overflow_ccm = np.max(img >= 1.0, axis=2)
+        img = alg.tonemap(img, config.tonemap)
+        img = alg.gamma(img, config.gamma)
+        img = alg.quantize(img, config.maxval, np.uint16)
+        t0 = time.time()
+        maxval = config.maxval
+        oflow = img.copy()
+        oflow[..., :] = np.mean(oflow, axis=2, keepdims=True)  # black & white image for overflow markers
+        oflow[overflow_ccm] = [maxval, 0, maxval]  # MAGENTA ==> overflow due to CCM (but not in raw/demosaic/lsc/wb)
+        oflow[overflow_wb] = [0, 0, maxval]        # BLUE ==> overflow due to LSC/WB gains (but not in raw/demosaic)
+        oflow[overflow_demosaic] = [0, maxval, 0]  # GREEN ==> overflow due to demosaicing (but not in raw)
+        oflow[overflow_raw] = [maxval, 0, 0]       # RED ==> overflow in original raw data
+        imgio.imwrite("overflow.ppm", oflow, maxval)
+        if config.verbose:
+            print(f"{_elapsed(t0)} - generating grayscale image with overflow markers [overflow.ppm]")
+        return img
 
 
 class TerminationRequest(IOError):
@@ -258,10 +169,10 @@ def _enforce(expression, message_if_false):
         sys.exit(-1)
 
 
-def _process(config, infilespec):
-    infilename = os.path.basename(infilespec)
-    outfilename = infilename.rsplit('.', 1)[0] + "." + config.outformat
-    bayer2ppm(config, infilespec, outfilename)
+def _elapsed(t0):
+    elapsed = (time.time() - t0) * 1000
+    elapsed = f"{elapsed:8.2f} ms"
+    return elapsed
 
 
 def main():
@@ -269,79 +180,81 @@ def main():
     config.width, config.height = argv.intpair("--size")
     config.bpp = argv.intval("--bpp", default=None, accepted=[8, 10, 12, 14, 16])
     config.lscfile = argv.stringval("--lsc", default=None)
-    config.bayerPattern = argv.stringval("--bayer", default="RGGB", accepted=["RGGB", "GBRG", "BGGR", "GRBG"])
-    config.blackLevel = argv.floatstring("--blacklevel", default="AUTO", accepted=["AUTO"])
-    config.whiteLevel = argv.floatstring("--whitelevel", default="MAX", accepted=["AUTO", "MAX"])
-    config.wb = argv.floatpair("--wb")
-    config.wp = argv.floattriple("--wp")
+    config.bayer_pattern = argv.stringval("--bayer", default="RGGB", accepted=["RGGB", "GBRG", "BGGR", "GRBG"])
+    config.blacklevel = argv.floatval("--blacklevel", default=None)
+    config.whitelevel = argv.floatval("--whitelevel", default=None)
+    config.wb = argv.floatpair("--wbgain")
+    config.wbfile = argv.stringval("--wb", default=None)
     config.ccmfile = argv.stringval("--ccm", default=None)
     config.tonemap = "Reinhard" if argv.exists("--tonemap") else None
-    config.gamma = argv.stringval("--gamma", default=None, accepted=["rec709", "sRGB"])
-    config.outbpp = argv.intval("--outbpp", default=None, accepted=[8, 10, 12, 14, 16])
+    config.gamma = argv.stringval("--gamma")
     config.verbose = argv.exists("--verbose")
     config.debug = argv.exists("--debug")
-    showHelp = argv.exists("--help")
+    show_help = argv.exists("--help")
     argv.exitIfAnyUnparsedOptions()
 
-    if len(sys.argv) < 2 or showHelp:
+    if len(sys.argv) < 2 or show_help:
         print("Usage: bayer2ppm [options] inputfile.[pgm|png|dng|raw] ...")
         print()
         print("  options:")
-        print("    --bpp N                        bits per pixel (for .RAW only); default = None")
-        print("    --size M N                     image width & height in pixels (for .RAW only); default = None")
+        print("    --bpp N                        bits per pixel (for .raw only); default = None")
+        print("    --size M N                     width & height in pixels (for .raw only); default = None")
         print("    --bayer RGGB|GBRG|BGGR|GRBG    Bayer order of input file; default = RGGB")
-        print("    --blacklevel N|AUTO            pixel value to subtract from all pixels; default = AUTO")
-        print("    --whitelevel N|AUTO|MAX        pixel value to consider fully saturated; default = MAX")
-        print("    --lsc filename.pfm             load lens shading correction table from PFM file; default = None")
-        print("    --wb R B                       multiply R and B pixels by the given factors; default = 1.0 1.0")
-        print("    --wp R G B                     alternative way to specify WB gains; equivalent to '--wb G/R G/B'")
-        print("    --ccm filename.csv             load 3 x 3 color correction matrix from CSV file; default = None")
+        print("    --blacklevel N                 pixel value to subtract from all pixels; default = Auto")
+        print("    --whitelevel N                 pixel value to consider fully saturated; default = Auto")
+        print("    --wbgain R B                   multiply R and B values by the given WB gains; default = 1.0 1.0")
+        print("    --lsc file.pfm                 load lens shading correction table from PFM file; default = None")
+        print("    --wb file.csv                  load white balance gains (R, G, B) from CSV file; default = None")
+        print("    --ccm file.csv                 load 3 x 3 color correction matrix from CSV file; default = None")
         print("    --tonemap                      apply tonemapping using Reinhard's algorithm; default = None")
-        print("    --gamma sRGB|rec709            apply gamma according to sRGB or rec709; default = None")
-        print("    --outbpp N                     output bit depth (None = keep original); default = None")
+        print("    --gamma sRGB|rec709|file.csv   apply a standard or custom gamma function; default = None")
         print("    --debug                        write unprocessed data to disk as .PGM (for .RAW only)")
         print("    --verbose                      print extra traces for diagnostics")
         print("    --help                         show this help message")
         print()
-        print("  Converts the given 10/12/16-bit Bayer raw PGM/PNG/RAW file(s) into RGB PPM using a reference")
-        print("  ISP pipeline written in Python.")
+        print("  Converts the given 10/12/14/16-bit sensor raw file(s) into RGB PPM using a reference ISP")
+        print("  written in Python.")
         print()
         sys.exit(-1)
-
-    # derive WB gains from given RGB white point (G must have highest value)
-    if config.wp is not None:
-        rGain = config.wp[1] / config.wp[0]
-        bGain = config.wp[1] / config.wp[2]
-        config.wb = (rGain, bGain)
 
     # load LSC table from given PFM file
     if config.lscfile is not None:
         lscfiles, basenames = argv.filenames([config.lscfile])
-        _enforce(len(lscfiles) > 0, "LSC file %s not found. Terminating."%(config.lscfile))
+        _enforce(len(lscfiles) > 0, f"LSC file {config.lscfile} not found. Terminating.")
         config.lsc, maxval = imgio.imread(config.lscfile)
+
+    # load WB gains from the given CSV file
+    if config.wbfile is not None:
+        wbfiles, basenames = argv.filenames([config.wbfile])
+        _enforce(len(wbfiles) > 0, f"WB file {config.wbfile} not found. Terminating.")
+        config.wb = np.genfromtxt(config.wbfile, delimiter=",")
+        config.wb = config.wb[[0, 2]] / config.wb[1]  # R/G, B/G
 
     # load 3 x 3 CCM from given CSV file
     if config.ccmfile is not None:
         ccmfiles, basenames = argv.filenames([config.ccmfile])
-        _enforce(len(ccmfiles) > 0, "CCM file %s not found. Terminating."%(config.ccmfile))
+        _enforce(len(ccmfiles) > 0, f"CCM file {config.ccmfile} not found. Terminating.")
         config.ccm = np.genfromtxt(config.ccmfile, delimiter=",")
 
+    # load gamma lookup table from CSV file
+    if config.gamma not in [None, "sRGB", "rec709"]:
+        gammafiles, basenames = argv.filenames([config.gammafile])
+        _enforce(len(gammafiles) > 0, "Gamma file {config.gammafile} not found. Terminating.")
+        config.gamma = np.genfromtxt(config.gammafile, delimiter=",")
+
     filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".dng", ".nef", ".raw", ".cr2"], sort=True, allowAllCaps=True)
-    arguments = [(config, filename) for filename in filenames]
-    numFiles = len(filenames)
-    _enforce(numFiles > 0, "No valid raw Bayer PGM/PNG/DNG/RAW files to process. Terminating.")
+    numfiles = len(filenames)
+    _enforce(numfiles > 0, "No valid raw Bayer PGM/PNG/DNG/RAW files to process. Terminating.")
     signal.signal(signal.SIGINT, lambda s, f: _onExit())  # Ctrl+C handler
-    ncpu = multiproc.cpu_count()
-    nproc = max(1, int(ncpu / 2))
-    print("Processing %d image(s) using up to %d concurrent processes..."%(numFiles, nproc))
     exitcode = -1
     try:
         t0 = time.time()
-        multiproc.run(_process, arguments, nproc, raise_exceptions=True)
+        for filename in filenames:
+            bayer2ppm(config, filename)
         elapsed = time.time() - t0
-        perFile = float(elapsed) / numFiles * 1000
-        if numFiles > 1:
-            print("Processed %d files in %.1f seconds (%d ms per file)"%(numFiles, elapsed, perFile))
+        per_file = float(elapsed) / numfiles * 1000
+        if numfiles > 1:
+            print(f"Processed {numfiles} files in {elapsed:.1f} seconds ({per_file:.0f} ms per file).")
         exitcode = 0
     except BaseException as e:
         if config.verbose:
