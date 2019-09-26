@@ -41,18 +41,17 @@ class ISPConfig:
         self.lsc = None               # None | <floatMxN> | <floatMxNx3>
         self.wb = None                # None | <float2>
         self.ccm = None               # None | <float3x3>
+        self.tonemap = None           # None | <string>
+        self.gamma = None             # None | sRGB | rec709 | <floatN>
         self.lscfile = None           # None | <filename>
         self.wbfile = None            # None | <filename>
         self.ccmfile = None           # None | <filename>
-        self.tonemap = None           # None | <filename>
-        self.gamma = None             # None | sRGB | rec709 | <filename>
+        self.gammamode = None         # None | sRGB | rec709 | <filename>
         self.verbose = None           # True | False
         self.debug = None             # True | False
         self.outformat = "ppm"        # currently hardcoded
 
     def __repr__(self):
-        classname = self.__class__
-        elements = self.__dict__
         reprstr = f"<ISPConfig {self.__dict__}>"
         return reprstr
 
@@ -114,9 +113,8 @@ def isp(config, img):
         img = alg.wb(img, config.wb)
         img = alg.ccm(img, config.ccm)
         img = alg.tonemap(img, config.tonemap)
-        img = alg.gamma(img, config.gamma)
+        img = alg.gamma(img, config.gammamode, config.gamma)
         img = alg.quantize(img, config.maxval, np.uint16)
-        return img
     else:
         alg = rawpipe.Algorithms(config.verbose)
         img = alg.linearize(img, config.blacklevel, config.whitelevel)
@@ -129,7 +127,7 @@ def isp(config, img):
         img = alg.ccm(img, config.ccm)
         overflow_ccm = np.max(img >= 1.0, axis=2)
         img = alg.tonemap(img, config.tonemap)
-        img = alg.gamma(img, config.gamma)
+        img = alg.gamma(img, config.gammamode, config.gamma)
         img = alg.quantize(img, config.maxval, np.uint16)
         t0 = time.time()
         maxval = config.maxval
@@ -142,7 +140,7 @@ def isp(config, img):
         imgio.imwrite("overflow.ppm", oflow, maxval)
         if config.verbose:
             print(f"{_elapsed(t0)} - generating grayscale image with overflow markers [overflow.ppm]")
-        return img
+    return img
 
 
 class TerminationRequest(IOError):
@@ -179,15 +177,15 @@ def main():
     config = ISPConfig()
     config.width, config.height = argv.intpair("--size")
     config.bpp = argv.intval("--bpp", default=None, accepted=[8, 10, 12, 14, 16])
-    config.lscfile = argv.stringval("--lsc", default=None)
     config.bayer_pattern = argv.stringval("--bayer", default="RGGB", accepted=["RGGB", "GBRG", "BGGR", "GRBG"])
     config.blacklevel = argv.floatval("--blacklevel", default=None)
     config.whitelevel = argv.floatval("--whitelevel", default=None)
     config.wb = argv.floatpair("--wbgain")
+    config.tonemap = "Reinhard" if argv.exists("--tonemap") else None
+    config.lscfile = argv.stringval("--lsc", default=None)
     config.wbfile = argv.stringval("--wb", default=None)
     config.ccmfile = argv.stringval("--ccm", default=None)
-    config.tonemap = "Reinhard" if argv.exists("--tonemap") else None
-    config.gamma = argv.stringval("--gamma")
+    config.gammamode = argv.stringval("--gamma", default=None)
     config.verbose = argv.exists("--verbose")
     config.debug = argv.exists("--debug")
     show_help = argv.exists("--help")
@@ -219,28 +217,32 @@ def main():
 
     # load LSC table from given PFM file
     if config.lscfile is not None:
-        lscfiles, basenames = argv.filenames([config.lscfile])
-        _enforce(len(lscfiles) > 0, f"LSC file {config.lscfile} not found. Terminating.")
-        config.lsc, maxval = imgio.imread(config.lscfile)
+        lscfiles, _ = argv.filenames([config.lscfile])
+        _enforce(lscfiles, f"LSC file {config.lscfile} not found. Terminating.")
+        config.lsc, _ = imgio.imread(config.lscfile)
 
     # load WB gains from the given CSV file
     if config.wbfile is not None:
-        wbfiles, basenames = argv.filenames([config.wbfile])
-        _enforce(len(wbfiles) > 0, f"WB file {config.wbfile} not found. Terminating.")
+        wbfiles, _ = argv.filenames([config.wbfile])
+        _enforce(wbfiles, f"WB file {config.wbfile} not found. Terminating.")
         config.wb = np.genfromtxt(config.wbfile, delimiter=",")
         config.wb = config.wb[[0, 2]] / config.wb[1]  # R/G, B/G
 
     # load 3 x 3 CCM from given CSV file
     if config.ccmfile is not None:
-        ccmfiles, basenames = argv.filenames([config.ccmfile])
-        _enforce(len(ccmfiles) > 0, f"CCM file {config.ccmfile} not found. Terminating.")
+        ccmfiles, _ = argv.filenames([config.ccmfile])
+        _enforce(ccmfiles, f"CCM file {config.ccmfile} not found. Terminating.")
         config.ccm = np.genfromtxt(config.ccmfile, delimiter=",")
 
     # load gamma lookup table from CSV file
-    if config.gamma not in [None, "sRGB", "rec709"]:
-        gammafiles, basenames = argv.filenames([config.gammafile])
-        _enforce(len(gammafiles) > 0, "Gamma file {config.gammafile} not found. Terminating.")
-        config.gamma = np.genfromtxt(config.gammafile, delimiter=",")
+    if config.gammamode is not None:
+        if config.gammamode not in ["sRGB", "rec709"]:
+            gammafiles, _ = argv.filenames([config.gammamode])
+            _enforce(gammafiles, f"Gamma curve file {config.gammamode} not found. Terminating.")
+            config.gamma = np.genfromtxt(config.gammamode, delimiter=",")
+            config.gammamode = "LUT"
+        else:
+            config.gamma = config.gammamode  # sRGB | rec709
 
     filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".dng", ".nef", ".raw", ".cr2"], sort=True, allowAllCaps=True)
     numfiles = len(filenames)
