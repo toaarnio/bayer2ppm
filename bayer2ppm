@@ -70,38 +70,41 @@ def bayer2ppm(config, infilespec):
     config.width = config.width or imginfo.width
     config.height = config.height or imginfo.height
     config.bpp = config.bpp or imginfo.bitdepth
+    config.maxval = 2 ** int(np.ceil(config.bpp)) - 1
     is_dng = imginfo.filetype in ["dng", "nef", "cr2"]
-    read_raw = lambda: imgio.imread(infilename, config.width, config.height, config.bpp)
-    raw, config.maxval = read_dng(config, infilename) if is_dng else read_raw()
+    read_raw = lambda: imgio.imread(infilename, config.width, config.height, config.bpp)[0]
+    raw = read_dng(config, infilename) if is_dng else read_raw()
+    config.bayer_pattern = config.bayer_pattern or "RGGB"
     height, width = raw.shape[:2]
-    bpp = int(np.log2(config.maxval + 1))
     raw = raw.astype(np.float32)
     if config.verbose:
-        print(f"{_elapsed(t0)} - reading input file [{infilename}]: {width} x {height}, {bpp} bpp; range = [{np.min(raw)}, {np.max(raw)}]")
+        print(f"{_elapsed(t0)} - reading input file [{infilename}]: {width} x {height}, {config.bpp} bpp; range = [{np.min(raw)}, {np.max(raw)}]")
     image = isp(config, raw)
     t0 = time.time()
     imgio.imwrite(outfilename, image, config.maxval)
     if config.verbose:
-        print(f"{_elapsed(t0)} - writing output file [{outfilename}]: {width} x {height}, {bpp} bpp")
+        print(f"{_elapsed(t0)} - writing output file [{outfilename}]: {width} x {height}, {config.bpp} bpp")
         print(f"{_elapsed(tStart)} - TOTAL\n")
 
 
 def read_dng(config, infilename):
     dng = rawpy.imread(infilename)
     raw = dng.raw_image.copy()  # NB: extracting the whole image, including metadata rows, black columns, etc.
-    bpp = np.log2(np.max(raw))
-    maxval = 2 ** int(np.ceil(bpp)) - 1
-    raw_pattern = [chr(dng.color_desc[ch]) for ch in dng.raw_pattern.flatten()]
-    config.bayer_pattern = ''.join(raw_pattern)  # [0 1 3 2] ==> "RGGB"
-    config.wb = np.array(dng.camera_whitebalance)[[0, 2]]  # pick r & b, drop gr & gb
-    config.wb = config.wb / 1024 if np.any(config.wb >= 1024) else config.wb
-    ccm1 = dng.color_matrix[:, :3]   # 3 x 4 => 3 x 3, drop zero column
-    ccm2 = dng.rgb_xyz_matrix[:3, :]  # 4 x 3 ==> 3 x 3, drop zero row
-    config.ccm = ccm1 if np.any(ccm1) else ccm2.T  # one or the other is always zero (it seems)
-    config.blacklevel = np.mean(dng.black_level_per_channel)  # take the average of per-channel black levels
-    _check(np.all(np.array(dng.black_level_per_channel) == config.blacklevel), "Per-channel black levels are not supported; using their average instead.")
-    _assert(np.any(config.ccm), "CCM must not be all-zero.")
-    return raw, maxval
+    if config.bayer_pattern is None:
+        raw_pattern = [chr(dng.color_desc[ch]) for ch in dng.raw_pattern.flatten()]
+        config.bayer_pattern = ''.join(raw_pattern)  # [0 1 3 2] ==> "RGGB"
+    if config.wb is None:
+        config.wb = np.array(dng.camera_whitebalance)[[0, 2]]  # pick r & b, drop gr & gb
+        config.wb = config.wb / 1024 if np.any(config.wb >= 1024) else config.wb
+    if config.ccm is None:
+        ccm1 = dng.color_matrix[:, :3]   # 3 x 4 => 3 x 3, drop zero column
+        ccm2 = dng.rgb_xyz_matrix[:3, :]  # 4 x 3 ==> 3 x 3, drop zero row
+        config.ccm = ccm1 if np.any(ccm1) else ccm2.T  # one or the other is always zero (it seems)
+        assert np.any(config.ccm), "CCM must not be all-zero."
+    if config.blacklevel is None:
+        config.blacklevel = np.mean(dng.black_level_per_channel)  # take the average of per-channel black levels
+        _check(np.all(np.array(dng.black_level_per_channel) == config.blacklevel), "Per-channel black levels are not supported; using their average instead.")
+    return raw
 
 
 def isp(config, img):
@@ -151,11 +154,6 @@ def _onExit():
     raise TerminationRequest("Terminated by the user.")
 
 
-def _assert(expression, message_if_false):
-    if not expression:
-        raise AssertionError(message_if_false)
-
-
 def _check(expression, message_if_false):
     if not expression:
         print(message_if_false)
@@ -177,7 +175,7 @@ def main():
     config = ISPConfig()
     config.width, config.height = argv.intpair("--size")
     config.bpp = argv.intval("--bpp", default=None, accepted=[8, 10, 12, 14, 16])
-    config.bayer_pattern = argv.stringval("--bayer", default="RGGB", accepted=["RGGB", "GBRG", "BGGR", "GRBG"])
+    config.bayer_pattern = argv.stringval("--bayer", default=None, accepted=["RGGB", "GBRG", "BGGR", "GRBG"])
     config.blacklevel = argv.floatval("--blacklevel", default=None)
     config.whitelevel = argv.floatval("--whitelevel", default=None)
     config.wb = argv.floatpair("--wbgain")
@@ -186,7 +184,7 @@ def main():
     config.wbfile = argv.stringval("--wb", default=None)
     config.ccmfile = argv.stringval("--ccm", default=None)
     config.gammamode = argv.stringval("--gamma", default=None)
-    config.verbose = argv.exists("--verbose")
+    config.verbose = not argv.exists("--quiet")
     config.debug = argv.exists("--debug")
     show_help = argv.exists("--help")
     argv.exitIfAnyUnparsedOptions()
@@ -206,12 +204,11 @@ def main():
         print("    --ccm file.csv                 load 3 x 3 color correction matrix from CSV file; default = None")
         print("    --tonemap                      apply tonemapping using Reinhard's algorithm; default = None")
         print("    --gamma sRGB|rec709|file.csv   apply a standard or custom gamma function; default = None")
-        print("    --debug                        write unprocessed data to disk as .PGM (for .RAW only)")
-        print("    --verbose                      print extra traces for diagnostics")
+        print("    --debug                        write processed image with overflow markers to 'overflow.ppm'")
+        print("    --quiet                        do not print any timings or traces for diagnostics")
         print("    --help                         show this help message")
         print()
-        print("  Converts the given 10/12/14/16-bit sensor raw file(s) into RGB PPM using a reference ISP")
-        print("  written in Python.")
+        print("  Converts the given 10/12/14/16-bit sensor raw file(s) into RGB PPM using a reference ISP.")
         print()
         sys.exit(-1)
 
