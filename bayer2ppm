@@ -42,6 +42,7 @@ class ISPConfig:
         self.wb = None                # None | <float2>
         self.ccm = None               # None | <float3x3>
         self.tonemap = None           # None | <string>
+        self.cnf_strength = None      # None | <float>
         self.gamma = None             # None | sRGB | rec709 | <floatN>
         self.lscfile = None           # None | <filename>
         self.wbfile = None            # None | <filename>
@@ -116,6 +117,7 @@ def isp(config, img):
         img = alg.wb(img, config.wb)
         img = alg.ccm(img, config.ccm)
         img = alg.tonemap(img, config.tonemap)
+        img = alg.chroma_denoise(img, config.cnf_strength)
         img = alg.gamma(img, config.gammamode, config.gamma)
         img = alg.quantize(img, config.maxval, np.uint16)
     else:
@@ -130,6 +132,7 @@ def isp(config, img):
         img = alg.ccm(img, config.ccm)
         overflow_ccm = np.max(img >= 1.0, axis=2)
         img = alg.tonemap(img, config.tonemap)
+        img = alg.chroma_denoise(img, config.cnf_strength)
         img = alg.gamma(img, config.gammamode, config.gamma)
         img = alg.quantize(img, config.maxval, np.uint16)
         t0 = time.time()
@@ -173,13 +176,14 @@ def _elapsed(t0):
 
 def main():
     config = ISPConfig()
-    config.width, config.height = argv.intpair("--size")
+    config.width, config.height = argv.intpair("--size", default=(None, None))
     config.bpp = argv.intval("--bpp", default=None, accepted=[8, 10, 12, 14, 16])
     config.bayer_pattern = argv.stringval("--bayer", default=None, accepted=["RGGB", "GBRG", "BGGR", "GRBG"])
     config.blacklevel = argv.floatval("--blacklevel", default=None)
     config.whitelevel = argv.floatval("--whitelevel", default=None)
     config.wb = argv.floatpair("--wbgain")
     config.tonemap = "Reinhard" if argv.exists("--tonemap") else None
+    config.cnf_strength = argv.floatval("--denoise", default=0.0, condition="v >= 0.0")
     config.lscfile = argv.stringval("--lsc", default=None)
     config.wbfile = argv.stringval("--wb", default=None)
     config.ccmfile = argv.stringval("--ccm", default=None)
@@ -203,6 +207,7 @@ def main():
         print("    --wb file.csv                  load white balance gains (R, G, B) from CSV file; default = None")
         print("    --ccm file.csv                 load 3 x 3 color correction matrix from CSV file; default = None")
         print("    --tonemap                      apply tonemapping using Reinhard's algorithm; default = None")
+        print("    --denoise N                    apply chroma denoising with filter strength N; default = 0.0")
         print("    --gamma sRGB|rec709|file.csv   apply a standard or custom gamma function; default = None")
         print("    --debug                        write processed image with overflow markers to 'overflow.ppm'")
         print("    --quiet                        do not print any timings or traces for diagnostics")
