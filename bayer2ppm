@@ -19,6 +19,7 @@ import signal           # built-in library
 import time             # built-in library
 import copy             # built-in library
 import pprint           # built-in library
+import traceback        # built-in library
 import numpy as np      # pip install numpy
 import imsize           # pip install imsize
 import imgio            # pip install imgio
@@ -57,7 +58,9 @@ class ISPConfig:
         return reprstr
 
     def __str__(self):
+        np.set_string_function(lambda s: f"[shape = {s.shape}, dtype = {s.dtype}]" if s.size > 10 else str(s))
         infostr = pprint.pformat(self.__dict__)
+        np.set_string_function(None)
         return infostr
 
 
@@ -116,8 +119,11 @@ def isp(config, img):
     if not config.debug:
         alg = rawpipe.Algorithms(config.verbose)
         img = alg.linearize(img, config.blacklevel, config.whitelevel)
+        if config.lsc.ndim == 2:
+            img = alg.lsc(img, config.lsc)
         img = alg.demosaic(img, config.bayer_pattern)
-        img = alg.lsc(img, config.lsc)
+        if config.lsc.ndim == 3:
+            img = alg.lsc(img, config.lsc)
         img = alg.wb(img, config.wb)
         img = alg.ccm(img, config.ccm)
         img = alg.tonemap(img, config.tonemap)
@@ -226,19 +232,28 @@ def main():
         lscfiles, _ = argv.filenames([config.lscfile])
         _enforce(lscfiles, f"LSC file {config.lscfile} not found. Terminating.")
         config.lsc, _ = imgio.imread(config.lscfile)
+        is_integer = np.all(np.mod(config.lsc, 1) == 0)
+        config.lsc = config.lsc.astype(np.float32)
+        config.lsc /= 1024.0 if is_integer else 1.0
 
     # load WB gains from the given CSV file
     if config.wbfile is not None:
         wbfiles, _ = argv.filenames([config.wbfile])
         _enforce(wbfiles, f"WB file {config.wbfile} not found. Terminating.")
         config.wb = np.genfromtxt(config.wbfile, delimiter=",")
-        config.wb = config.wb[[0, 2]] / config.wb[1]  # R/G, B/G
+        is_integer = np.all(np.mod(config.wb, 1) == 0)
+        config.wb /= 1024.0 if is_integer else 1.0
 
     # load 3 x 3 CCM from given CSV file
     if config.ccmfile is not None:
         ccmfiles, _ = argv.filenames([config.ccmfile])
         _enforce(ccmfiles, f"CCM file {config.ccmfile} not found. Terminating.")
         config.ccm = np.genfromtxt(config.ccmfile, delimiter=",")
+        config.ccm = config.ccm.reshape(3, 3)  # ensure correct shape
+        is_integer = np.all(np.mod(config.ccm, 1) == 0)
+        config.ccm /= 1024.0 if is_integer else 1.0
+        rowsums = np.sum(config.ccm, axis=1)
+        _check(np.allclose(rowsums, 1.0), f"WARNING: CCM row sums = {rowsums}")
 
     # load gamma lookup table from CSV file
     if config.gammamode is not None:
@@ -249,6 +264,8 @@ def main():
             config.gammamode = "LUT"
         else:
             config.gamma = config.gammamode  # sRGB | rec709
+
+    print(f"\n{config}\n")
 
     filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".dng", ".nef", ".raw", ".cr2"], sort=True, allowAllCaps=True)
     numfiles = len(filenames)
@@ -264,9 +281,8 @@ def main():
         if numfiles > 1:
             print(f"Processed {numfiles} files in {elapsed:.1f} seconds ({per_file:.0f} ms per file).")
         exitcode = 0
-    except BaseException as e:
+    except BaseException as e:  # pylint: disable=broad-except
         if config.verbose:
-            import traceback
             traceback.print_exc()
         else:
             print(f"{e.__class__.__name__}: {e}")
@@ -276,4 +292,5 @@ def main():
 
 
 if __name__ == "__main__":
+    np.set_printoptions(formatter={'float': lambda x: f"{x:.3f}"}, linewidth=180)
     main()
