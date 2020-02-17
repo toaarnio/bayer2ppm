@@ -58,7 +58,14 @@ class ISPConfig:
         return reprstr
 
     def __str__(self):
-        np.set_string_function(lambda s: f"[shape = {s.shape}, dtype = {s.dtype}]" if s.size > 10 else str(s))
+        def formatter(ndarr):
+            if ndarr.size > 10:
+                fmt = f"[shape = {ndarr.shape}, "
+                fmt += f"range = [{np.min(ndarr):.2f}, {np.max(ndarr):.2f}]"
+            else:
+                fmt = str(ndarr)
+            return fmt
+        np.set_string_function(formatter)
         infostr = pprint.pformat(self.__dict__)
         np.set_string_function(None)
         return infostr
