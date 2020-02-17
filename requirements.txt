@@ -1,5 +1,5 @@
 opencv-python >= 4.1.0
-imsize >= 0.9.2
-imgio >= 0.5.4
+imsize >= 1.0.3
+imgio >= 0.5.6
 rawpy >= 0.14.0
-rawpipe >= 0.5.1
+rawpipe >= 0.7.5

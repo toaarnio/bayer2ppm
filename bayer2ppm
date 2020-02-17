@@ -122,15 +122,40 @@ def read_dng(config, infilespec):
     return raw
 
 
+def combine_lsc_wb(config):
+    alg = rawpipe.Algorithms(config.verbose)
+    c1, c2, c3, c4 = alg.bayer_split(config.lsc)
+    bayermap = dict(zip("RGB", config.wb))
+    c1 *= bayermap[config.bayer_pattern[0]]
+    c2 *= bayermap[config.bayer_pattern[1]]
+    c3 *= bayermap[config.bayer_pattern[2]]
+    c4 *= bayermap[config.bayer_pattern[3]]
+    lsc = alg.bayer_combine(c1, c2, c3, c4)
+    return lsc
+
+
+def lsc_bayer_domain(config, img):
+    if config.lsc is not None and config.lsc.ndim == 2:
+        alg = rawpipe.Algorithms(config.verbose)
+        img = alg.lsc(img, config.lsc)
+    return img
+
+
+def lsc_rgb_domain(config, img):
+    if config.lsc is not None and config.lsc.ndim == 3:
+        alg = rawpipe.Algorithms(config.verbose)
+        img = alg.lsc(img, config.lsc)
+    return img
+
+
 def isp(config, img):
     if not config.debug:
         alg = rawpipe.Algorithms(config.verbose)
         img = alg.linearize(img, config.blacklevel, config.whitelevel)
-        if config.lsc.ndim == 2:
-            img = alg.lsc(img, config.lsc)
+        img = lsc_bayer_domain(config, img)
+        img = alg.clip(img, 0.0, 1.0)
         img = alg.demosaic(img, config.bayer_pattern)
-        if config.lsc.ndim == 3:
-            img = alg.lsc(img, config.lsc)
+        img = lsc_rgb_domain(config, img)
         img = alg.wb(img, config.wb)
         img = alg.ccm(img, config.ccm)
         img = alg.tonemap(img, config.tonemap)
