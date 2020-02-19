@@ -62,8 +62,10 @@ class ISPConfig:
             if ndarr.size > 10:
                 fmt = f"[shape = {ndarr.shape}, "
                 fmt += f"range = [{np.min(ndarr):.2f}, {np.max(ndarr):.2f}]"
+            elif ndarr.ndim >= 2:
+                fmt = f"\n{ndarr}"
             else:
-                fmt = str(ndarr)
+                fmt = f"{ndarr}"
             return fmt
         np.set_string_function(formatter)
         infostr = pprint.pformat(self.__dict__)
@@ -285,7 +287,7 @@ def main():
         is_integer = np.all(np.mod(config.ccm, 1) == 0)
         config.ccm /= 1024.0 if is_integer else 1.0
         rowsums = np.sum(config.ccm, axis=1)
-        _check(np.allclose(rowsums, 1.0), f"WARNING: CCM row sums = {rowsums}")
+        _check(np.allclose(rowsums, 1.0, rtol=1e-03), f"WARNING: CCM row sums = {rowsums}")
 
     # load gamma lookup table from CSV file
     if config.gammamode is not None:
