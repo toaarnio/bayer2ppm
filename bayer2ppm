@@ -249,7 +249,7 @@ def main():
         print("    --wbgain R B                   multiply R and B values by the given WB gains; default = 1.0 1.0")
         print("    --lsc file.pfm                 load lens shading correction table from PFM file; default = None")
         print("    --wb file.csv                  load white balance gains (R, G, B) from CSV file; default = None")
-        print("    --ccm file.csv                 load 3 x 3 color correction matrix from CSV file; default = None")
+        print("    --ccm identity|file.csv        load 3 x 3 color correction matrix from CSV file; default = None")
         print("    --tonemap                      apply tonemapping using Reinhard's algorithm; default = None")
         print("    --denoise N                    apply chroma denoising with filter strength N; default = 0.0")
         print("    --gamma sRGB|rec709|file.csv   apply a standard or custom gamma function; default = None")
@@ -280,14 +280,17 @@ def main():
 
     # load 3 x 3 CCM from given CSV file
     if config.ccmfile is not None:
-        ccmfiles, _ = argv.filenames([config.ccmfile])
-        _enforce(ccmfiles, f"CCM file {config.ccmfile} not found. Terminating.")
-        config.ccm = np.genfromtxt(config.ccmfile, delimiter=",")
-        config.ccm = config.ccm.reshape(3, 3)  # ensure correct shape
-        is_integer = np.all(np.mod(config.ccm, 1) == 0)
-        config.ccm /= 1024.0 if is_integer else 1.0
-        rowsums = np.sum(config.ccm, axis=1)
-        _check(np.allclose(rowsums, 1.0, rtol=1e-03), f"WARNING: CCM row sums = {rowsums}")
+        if config.ccmfile == "identity":
+            config.ccm = np.eye(3)
+        else:
+            ccmfiles, _ = argv.filenames([config.ccmfile])
+            _enforce(ccmfiles, f"CCM file {config.ccmfile} not found. Terminating.")
+            config.ccm = np.genfromtxt(config.ccmfile, delimiter=",")
+            config.ccm = config.ccm.reshape(3, 3)  # ensure correct shape
+            is_integer = np.all(np.mod(config.ccm, 1) == 0)
+            config.ccm /= 1024.0 if is_integer else 1.0
+            rowsums = np.sum(config.ccm, axis=1)
+            _check(np.allclose(rowsums, 1.0, rtol=1e-03), f"WARNING: CCM row sums = {rowsums}")
 
     # load gamma lookup table from CSV file
     if config.gammamode is not None:
