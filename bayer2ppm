@@ -26,7 +26,7 @@ import imgio            # pip install imgio
 import rawpy            # pip install rawpy
 import rawpipe          # pip install rawpipe
 import argv             # local import: argv.py
-
+import matplotlib.pyplot as plt # pip install matplotlib
 
 class ISPConfig:
 
@@ -52,6 +52,9 @@ class ISPConfig:
         self.verbose = None           # True | False
         self.debug = None             # True | False
         self.outformat = "ppm"        # currently hardcoded
+        self.version = '1.01'         # program version
+        self.process_yuv = False      # True | False
+        self.outdir = None            # None | <dirname>
 
     def __repr__(self):
         reprstr = f"<ISPConfig {self.__dict__}>"
@@ -94,11 +97,49 @@ def bayer2ppm(config, infilespec):
         print(f"{_elapsed(t0)} - reading input file [{infilename}]: {width} x {height}, {config.bpp} bpp; range = [{np.min(raw)}, {np.max(raw)}]")
     image = isp(config, raw)
     t0 = time.time()
+
+    if config.outdir is not None:
+        outfilename = os.path.join(config.outdir, outfilename)
+
     imgio.imwrite(outfilename, image, config.maxval)
     if config.verbose:
         print(f"{_elapsed(t0)} - writing output file [{outfilename}]: {width} x {height}, {config.bpp} bpp")
         print(f"{_elapsed(tStart)} - TOTAL\n")
 
+    if config.process_yuv:
+        t1Start = t1 = time.time()
+        print(f"Converting {infilename} to YUV...")
+        yuv_image = rgb_to_yuv(config, image.copy())
+        print(f"{_elapsed(t1)} - converting RGB to YUV")
+
+        # Get Y-plane and scale it to 0-255 range
+        y_plane = yuv_image[:,:,0]
+        y_plane *= (255.0 / y_plane.max())
+        y_plane_data = y_plane.astype(np.uint8)
+        np.clip(y_plane_data, 0, 255)
+        if config.verbose and config.debug:
+            print(f"{_elapsed(t1)} - scale Y-plane -> min: {y_plane_data.min()}, max: {y_plane_data.max()}")
+            plt.figure()
+            plt.title('Y-plane 8bits')
+            plt.imshow(y_plane_data, cmap = 'gray')
+            plt.colorbar()
+            print(f"{_elapsed(t1)} - plot Y-plane. Press 'q' to close the plot figure")
+            plt.show()
+
+        # Save Y-plane to a binary file
+        y_plane_filename = outfilename.rsplit('.', 1)[0] + '_y_plane.bin'
+
+        # Reshape data in to 1d array
+        y_plane_data_array = y_plane_data.flatten()
+
+        # ... and save it to the file
+        with open(y_plane_filename, 'wb') as f:
+            y_plane_data_array.tofile(f)
+
+        if config.verbose and config.debug:
+            print(f"{_elapsed(t1)} - writing Y-plane data to [{y_plane_filename}] file")
+            print(f"{_elapsed(t1Start)} - TOTAL\n")
+    print('Ok')
 
 def read_dng(config, infilespec):
     dng = rawpy.imread(infilespec)
@@ -149,6 +190,14 @@ def lsc_rgb_domain(config, img):
         img = alg.lsc(img, config.lsc)
     return img
 
+def rgb_to_yuv(config, img):
+    yuvmat = np.array([[0.29900, -0.16874,  0.50000],
+                       [0.58700, -0.33126, -0.41869],
+                       [0.11400,  0.50000, -0.08131]])
+
+    img_yuv = np.dot(img, yuvmat)
+    img_yuv[:, :, 1:] += 128.0
+    return img_yuv
 
 def isp(config, img):
     if not config.debug:
@@ -187,7 +236,10 @@ def isp(config, img):
         oflow[overflow_wb] = [0, 0, maxval]        # BLUE ==> overflow due to LSC/WB gains (but not in raw/demosaic)
         oflow[overflow_demosaic] = [0, maxval, 0]  # GREEN ==> overflow due to demosaicing (but not in raw)
         oflow[overflow_raw] = [maxval, 0, 0]       # RED ==> overflow in original raw data
-        imgio.imwrite("overflow.ppm", oflow, maxval)
+        outfilename = "overflow.ppm"
+        if config.outdir is not None:
+            outfilename = os.path.join(config.outdir, outfilename)
+        imgio.imwrite(outfilename, oflow, maxval)
         if config.verbose:
             print(f"{_elapsed(t0)} - generating grayscale image with overflow markers [overflow.ppm]")
     return img
@@ -234,8 +286,13 @@ def main():
     config.gammamode = argv.stringval("--gamma", default=None)
     config.verbose = not argv.exists("--quiet")
     config.debug = argv.exists("--debug")
+    config.process_yuv = argv.exists("--yuv")
+    config.outdir = argv.stringval("--outdir", default=None)
     show_help = argv.exists("--help")
     argv.exitIfAnyUnparsedOptions()
+
+    if config.verbose:
+        print('Bayer RAW convertor, ver %s\n' % config.version)
 
     if len(sys.argv) < 2 or show_help:
         print("Usage: bayer2ppm [options] inputfile.[pgm|png|dng|raw] ...")
@@ -253,8 +310,10 @@ def main():
         print("    --tonemap                      apply tonemapping using Reinhard's algorithm; default = None")
         print("    --denoise N                    apply chroma denoising with filter strength N; default = 0.0")
         print("    --gamma sRGB|rec709|file.csv   apply a standard or custom gamma function; default = None")
-        print("    --debug                        write processed image with overflow markers to 'overflow.ppm'")
+        print("    --debug                        write processed image with overflow markers to 'overflow.ppm' / plot Y-plane")
         print("    --quiet                        do not print any timings or traces for diagnostics")
+        print("    --yuv                          process RGB->YUV and save Y-plane (scaled to 0-255) to '.bin' file")
+        print("    --outdir                       output directory for processed files; default = current dir")
         print("    --help                         show this help message")
         print()
         print("  Converts the given 10/12/14/16-bit sensor raw file(s) into RGB PPM using a reference ISP.")
@@ -302,7 +361,7 @@ def main():
         else:
             config.gamma = config.gammamode  # sRGB | rec709
 
-    print(f"\n{config}\n")
+    print(f"Config:\n{config}\n")
 
     filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".dng", ".nef", ".raw", ".cr2"], sort=True, allowAllCaps=True)
     numfiles = len(filenames)
