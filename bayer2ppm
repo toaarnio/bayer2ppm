@@ -152,14 +152,6 @@ def lsc_rgb_domain(config, img):
         img = alg.lsc(img, config.lsc)
     return img
 
-def rgb_to_yuv(config, img):
-    yuvmat = np.array([[0.29900, -0.16874,  0.50000],
-                       [0.58700, -0.33126, -0.41869],
-                       [0.11400,  0.50000, -0.08131]])
-
-    img_yuv = np.dot(img, yuvmat)
-    img_yuv[:, :, 1:] += 128.0
-    return img_yuv
 
 def isp(config, img):
     if not config.debug:
