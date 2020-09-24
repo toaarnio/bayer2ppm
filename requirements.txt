@@ -1,7 +1,6 @@
 opencv-python >= 4.1.0
 imsize >= 1.0.3
 imgio >= 0.5.6
-matplotlib >= 3.3.2
 rawpy >= 0.14.0
 rawpipe >= 0.7.5
 
