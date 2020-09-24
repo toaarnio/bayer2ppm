@@ -3,5 +3,3 @@ imsize >= 1.0.3
 imgio >= 0.5.6
 rawpy >= 0.14.0
 rawpipe >= 0.7.5
-
-
