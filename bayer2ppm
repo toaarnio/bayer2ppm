@@ -27,6 +27,7 @@ import rawpy            # pip install rawpy
 import rawpipe          # pip install rawpipe
 import argv             # local import: argv.py
 
+
 class ISPConfig:
 
     def __init__(self):
@@ -73,6 +74,7 @@ class ISPConfig:
         np.set_string_function(None)
         return infostr
 
+
 def bayer2ppm(config, infilespec):
     tStart = t0 = time.time()
     config = copy.copy(config)  # avoid modifying the original
@@ -102,6 +104,7 @@ def bayer2ppm(config, infilespec):
     if config.verbose:
         print(f"{_elapsed(t0)} - writing output file [{outfilename}]: {width} x {height}, {config.bpp} bpp")
         print(f"{_elapsed(tStart)} - TOTAL\n")
+
 
 def read_dng(config, infilespec):
     dng = rawpy.imread(infilespec)
