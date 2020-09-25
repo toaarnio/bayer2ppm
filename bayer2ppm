@@ -27,7 +27,6 @@ import rawpy            # pip install rawpy
 import rawpipe          # pip install rawpipe
 import argv             # local import: argv.py
 
-
 class ISPConfig:
 
     def __init__(self):
@@ -52,6 +51,8 @@ class ISPConfig:
         self.verbose = None           # True | False
         self.debug = None             # True | False
         self.outformat = "ppm"        # currently hardcoded
+        self.version = '1.01'         # program version
+        self.outdir = None            # None | <dirname>
 
     def __repr__(self):
         reprstr = f"<ISPConfig {self.__dict__}>"
@@ -71,7 +72,6 @@ class ISPConfig:
         infostr = pprint.pformat(self.__dict__)
         np.set_string_function(None)
         return infostr
-
 
 def bayer2ppm(config, infilespec):
     tStart = t0 = time.time()
@@ -94,11 +94,14 @@ def bayer2ppm(config, infilespec):
         print(f"{_elapsed(t0)} - reading input file [{infilename}]: {width} x {height}, {config.bpp} bpp; range = [{np.min(raw)}, {np.max(raw)}]")
     image = isp(config, raw)
     t0 = time.time()
+
+    if config.outdir is not None:
+        outfilename = os.path.join(config.outdir, outfilename)
+
     imgio.imwrite(outfilename, image, config.maxval)
     if config.verbose:
         print(f"{_elapsed(t0)} - writing output file [{outfilename}]: {width} x {height}, {config.bpp} bpp")
         print(f"{_elapsed(tStart)} - TOTAL\n")
-
 
 def read_dng(config, infilespec):
     dng = rawpy.imread(infilespec)
@@ -187,7 +190,10 @@ def isp(config, img):
         oflow[overflow_wb] = [0, 0, maxval]        # BLUE ==> overflow due to LSC/WB gains (but not in raw/demosaic)
         oflow[overflow_demosaic] = [0, maxval, 0]  # GREEN ==> overflow due to demosaicing (but not in raw)
         oflow[overflow_raw] = [maxval, 0, 0]       # RED ==> overflow in original raw data
-        imgio.imwrite("overflow.ppm", oflow, maxval)
+        outfilename = "overflow.ppm"
+        if config.outdir is not None:
+            outfilename = os.path.join(config.outdir, outfilename)
+        imgio.imwrite(outfilename, oflow, maxval)
         if config.verbose:
             print(f"{_elapsed(t0)} - generating grayscale image with overflow markers [overflow.ppm]")
     return img
@@ -234,8 +240,12 @@ def main():
     config.gammamode = argv.stringval("--gamma", default=None)
     config.verbose = not argv.exists("--quiet")
     config.debug = argv.exists("--debug")
+    config.outdir = argv.stringval("--outdir", default=None)
     show_help = argv.exists("--help")
     argv.exitIfAnyUnparsedOptions()
+
+    if config.verbose:
+        print(f"Bayer RAW converter, version {config.version}")
 
     if len(sys.argv) < 2 or show_help:
         print("Usage: bayer2ppm [options] inputfile.[pgm|png|dng|raw] ...")
@@ -255,6 +265,7 @@ def main():
         print("    --gamma sRGB|rec709|file.csv   apply a standard or custom gamma function; default = None")
         print("    --debug                        write processed image with overflow markers to 'overflow.ppm'")
         print("    --quiet                        do not print any timings or traces for diagnostics")
+        print("    --outdir                       output directory for processed files; default = current dir")
         print("    --help                         show this help message")
         print()
         print("  Converts the given 10/12/14/16-bit sensor raw file(s) into RGB PPM using a reference ISP.")
@@ -302,7 +313,7 @@ def main():
         else:
             config.gamma = config.gammamode  # sRGB | rec709
 
-    print(f"\n{config}\n")
+    print(f"Config:\n{config}\n")
 
     filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".dng", ".nef", ".raw", ".cr2"], sort=True, allowAllCaps=True)
     numfiles = len(filenames)
