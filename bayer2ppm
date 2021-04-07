@@ -39,6 +39,7 @@ class ISPConfig:
         self.whitelevel = None        # None | <float>
         self.bayer_pattern = None     # None | RGGB | GBRG | BGGR | GRBG
         self.demosaic = True          # True | False
+        self.downsample = None        # True | False
         self.lsc = None               # None | <floatMxN> | <floatMxNx3>
         self.wb = None                # None | <float2>
         self.ccm = None               # None | <float3x3>
@@ -162,7 +163,7 @@ def isp(config, img):
         img = alg.linearize(img, config.blacklevel, config.whitelevel)
         img = lsc_bayer_domain(config, img)
         img = alg.clip(img, 0.0, 1.0)
-        img = alg.demosaic(img, config.bayer_pattern)
+        img = alg.demosaic(img, config.bayer_pattern, config.downsample)
         img = lsc_rgb_domain(config, img)
         img = alg.wb(img, config.wb)
         img = alg.ccm(img, config.ccm)
@@ -173,9 +174,8 @@ def isp(config, img):
     else:
         alg = rawpipe.Algorithms(config.verbose)
         img = alg.linearize(img, config.blacklevel, config.whitelevel)
-        overflow_raw = (img >= 1.0)
-        img = alg.demosaic(img, config.bayer_pattern)
-        overflow_demosaic = np.max(img >= 1.0, axis=2)
+        img = alg.demosaic(img, config.bayer_pattern, config.downsample)
+        overflow_raw = np.max(img >= 1.0, axis=2)
         img = alg.lsc(img, config.lsc)
         img = alg.wb(img, config.wb)
         overflow_wb = np.max(img >= 1.0, axis=2)
@@ -189,10 +189,9 @@ def isp(config, img):
         maxval = config.maxval
         oflow = img.copy()
         oflow[..., :] = np.mean(oflow, axis=2, keepdims=True)  # black & white image for overflow markers
-        oflow[overflow_ccm] = [maxval, 0, maxval]  # MAGENTA ==> overflow due to CCM (but not in raw/demosaic/lsc/wb)
-        oflow[overflow_wb] = [0, 0, maxval]        # BLUE ==> overflow due to LSC/WB gains (but not in raw/demosaic)
-        oflow[overflow_demosaic] = [0, maxval, 0]  # GREEN ==> overflow due to demosaicing (but not in raw)
-        oflow[overflow_raw] = [maxval, 0, 0]       # RED ==> overflow in original raw data
+        oflow[overflow_ccm] = [maxval, maxval, 0]  # YELLOW ==> overflow due to CCM (but not in raw/demosaic/lsc/wb)
+        oflow[overflow_wb] = [0, maxval, 0]  # GREEN ==> overflow due to LSC/WB gains (but not in raw/demosaic)
+        oflow[overflow_raw] = [maxval, 0, 0]  # RED ==> overflow in original raw data or after demosaicing
         outfilename = "overflow.ppm"
         if config.outdir is not None:
             outfilename = os.path.join(config.outdir, outfilename)
@@ -231,6 +230,7 @@ def main():
     config = ISPConfig()
     config.width, config.height = argv.intpair("--size", default=(None, None))
     config.bpp = argv.intval("--bpp", default=None, accepted=[8, 10, 12, 14, 16])
+    config.downsample = argv.exists("--downsample")
     config.bayer_pattern = argv.stringval("--bayer", default=None, accepted=["RGGB", "GBRG", "BGGR", "GRBG"])
     config.blacklevel = argv.floatval("--blacklevel", default=None)
     config.whitelevel = argv.floatval("--whitelevel", default=None)
@@ -256,6 +256,7 @@ def main():
         print("  options:")
         print("    --bpp N                        bits per pixel (for .raw only); default = None")
         print("    --size M N                     width & height in pixels (for .raw only); default = None")
+        print("    --downsample                   downsample output image by a factor of 2 x 2")
         print("    --bayer RGGB|GBRG|BGGR|GRBG    Bayer order of input file; default = RGGB")
         print("    --blacklevel N                 pixel value to subtract from all pixels; default = Auto")
         print("    --whitelevel N                 pixel value to consider fully saturated; default = Auto")
