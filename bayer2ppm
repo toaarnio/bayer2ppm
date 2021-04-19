@@ -21,6 +21,7 @@ import copy             # built-in library
 import pprint           # built-in library
 import traceback        # built-in library
 import numpy as np      # pip install numpy
+import natsort          # pip install natsort
 import imsize           # pip install imsize
 import imgio            # pip install imgio
 import rawpy            # pip install rawpy
@@ -322,9 +323,11 @@ def main():
 
     print(f"Config:\n{config}\n")
 
-    filenames, _ = argv.filenames(sys.argv[1:], [".pgm", ".png", ".dng", ".nef", ".raw", ".cr2"], sort=True, allowAllCaps=True)
+    filetypes = [".pgm", ".ppm", ".pnm", ".png", ".dng", ".nef", ".cr2", ".raw"]
+    filenames, _ = argv.filenames(sys.argv[1:], filetypes, allowAllCaps=True)
+    filenames = natsort.natsorted(filenames)
     numfiles = len(filenames)
-    _enforce(numfiles > 0, "No valid raw Bayer PGM/PNG/DNG/RAW files to process. Terminating.")
+    _enforce(numfiles > 0, "No valid PGM/PPM/PNM/PNG/DNG/NEF/CR2/RAW files to process. Terminating.")
     signal.signal(signal.SIGINT, lambda s, f: _onExit())  # Ctrl+C handler
     exitcode = -1
     try:
