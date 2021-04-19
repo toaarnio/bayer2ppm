@@ -84,13 +84,23 @@ def bayer2ppm(config, infilespec):
     outfilename = infilename.rsplit('.', 1)[0] + "." + config.outformat
     print(f"Converting {infilename} to {config.outformat.upper()}...")
     imginfo = imsize.read(infilespec)
-    config.width = config.width or imginfo.width       # unreliable for DNG
-    config.height = config.height or imginfo.height    # unreliable for DNG
-    config.bpp = config.bpp or imginfo.bitdepth        # unreliable for DNG
-    config.maxval = 2 ** int(np.ceil(config.bpp)) - 1  # unreliable for DNG
-    is_dng = imginfo.filetype in ["dng", "nef", "cr2"]
-    read_raw = lambda: imgio.imread(infilespec, config.width, config.height, config.bpp)[0]
-    raw = read_dng(config, infilespec) if is_dng else read_raw()
+    if imginfo is not None:
+        config.width = config.width or imginfo.width       # unreliable for DNG
+        config.height = config.height or imginfo.height    # unreliable for DNG
+        config.bpp = config.bpp or imginfo.bitdepth        # unreliable for DNG
+        config.maxval = 2 ** int(np.ceil(config.bpp)) - 1  # unreliable for DNG
+        is_dng = imginfo.filetype in ["dng", "nef", "cr2"]
+        read_raw = lambda: imgio.imread(infilespec, config.width, config.height, config.bpp)[0]
+        raw = read_dng(config, infilespec) if is_dng else read_raw()
+        if config.verbose:
+            print(f"{imginfo}\n")
+    else:  # handle numpy .npz as a special case
+        npz = np.load(infilespec)
+        raw = npz[npz.files[0]]
+        config.width = raw.shape[1]
+        config.height = raw.shape[0]
+        config.bpp = 16
+        config.maxval = 65535
     config.bayer_pattern = config.bayer_pattern or "RGGB"
     config.demosaic = raw.ndim == 2
     height, width = raw.shape[:2]
@@ -323,11 +333,11 @@ def main():
 
     print(f"Config:\n{config}\n")
 
-    filetypes = [".pgm", ".ppm", ".pnm", ".png", ".dng", ".nef", ".cr2", ".raw"]
+    filetypes = [".pgm", ".ppm", ".pnm", ".png", ".dng", ".nef", ".cr2", ".raw", ".npz"]
     filenames, _ = argv.filenames(sys.argv[1:], filetypes, allowAllCaps=True)
     filenames = natsort.natsorted(filenames)
     numfiles = len(filenames)
-    _enforce(numfiles > 0, "No valid PGM/PPM/PNM/PNG/DNG/NEF/CR2/RAW files to process. Terminating.")
+    _enforce(numfiles > 0, "No valid PGM/PPM/PNM/PNG/DNG/NEF/CR2/RAW/NPZ files to process. Terminating.")
     signal.signal(signal.SIGINT, lambda s, f: _onExit())  # Ctrl+C handler
     exitcode = -1
     try:
