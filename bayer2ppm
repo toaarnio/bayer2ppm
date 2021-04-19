@@ -38,7 +38,7 @@ class ISPConfig:
         self.blacklevel = None        # None | <float>
         self.whitelevel = None        # None | <float>
         self.bayer_pattern = None     # None | RGGB | GBRG | BGGR | GRBG
-        self.demosaic = True          # True | False
+        self.demosaic = None          # None | True | False
         self.downsample = None        # True | False
         self.lsc = None               # None | <floatMxN> | <floatMxNx3>
         self.wb = None                # None | <float2>
@@ -52,9 +52,9 @@ class ISPConfig:
         self.gammamode = None         # None | sRGB | rec709 | <filename>
         self.verbose = None           # True | False
         self.debug = None             # True | False
-        self.outformat = "ppm"        # currently hardcoded
-        self.version = '1.01'         # program version
         self.outdir = None            # None | <dirname>
+        self.outformat = "ppm"        # currently hardcoded
+        self.version = "1.02"         # program version
 
     def __repr__(self):
         reprstr = f"<ISPConfig {self.__dict__}>"
@@ -91,6 +91,7 @@ def bayer2ppm(config, infilespec):
     read_raw = lambda: imgio.imread(infilespec, config.width, config.height, config.bpp)[0]
     raw = read_dng(config, infilespec) if is_dng else read_raw()
     config.bayer_pattern = config.bayer_pattern or "RGGB"
+    config.demosaic = raw.ndim == 2
     height, width = raw.shape[:2]
     raw = raw.astype(np.float32)
     if config.verbose:
@@ -163,7 +164,8 @@ def isp(config, img):
         img = alg.linearize(img, config.blacklevel, config.whitelevel)
         img = lsc_bayer_domain(config, img)
         img = alg.clip(img, 0.0, 1.0)
-        img = alg.demosaic(img, config.bayer_pattern, config.downsample)
+        if config.demosaic:
+            img = alg.demosaic(img, config.bayer_pattern, config.downsample)
         img = lsc_rgb_domain(config, img)
         img = alg.wb(img, config.wb)
         img = alg.ccm(img, config.ccm)
@@ -174,7 +176,8 @@ def isp(config, img):
     else:
         alg = rawpipe.Algorithms(config.verbose)
         img = alg.linearize(img, config.blacklevel, config.whitelevel)
-        img = alg.demosaic(img, config.bayer_pattern, config.downsample)
+        if config.demosaic:
+            img = alg.demosaic(img, config.bayer_pattern, config.downsample)
         overflow_raw = np.max(img >= 1.0, axis=2)
         img = alg.lsc(img, config.lsc)
         img = alg.wb(img, config.wb)
