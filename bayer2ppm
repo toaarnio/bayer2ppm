@@ -85,9 +85,12 @@ def bayer2ppm(config, infilespec):
     print(f"Converting {infilename} to {config.outformat.upper()}...")
     imginfo = imsize.read(infilespec)
     if imginfo is not None:
-        config.width = config.width or imginfo.width       # unreliable for DNG
-        config.height = config.height or imginfo.height    # unreliable for DNG
-        config.bpp = config.bpp or imginfo.bitdepth        # unreliable for DNG
+        config.width = config.width or imginfo.width  # unreliable for DNG
+        config.height = config.height or imginfo.height  # unreliable for DNG
+        if imginfo.isfloat:  # default to 16-bit integer output if input is float32
+            config.bpp = config.bpp or 16
+        else:  # default to input bit depth for non-floating-point inputs
+            config.bpp = config.bpp or imginfo.bitdepth  # unreliable for DNG
         config.maxval = 2 ** int(np.ceil(config.bpp)) - 1  # unreliable for DNG
         is_dng = imginfo.filetype in ["dng", "nef", "cr2"]
         read_raw = lambda: imgio.imread(infilespec, config.width, config.height, config.bpp)[0]
@@ -333,11 +336,11 @@ def main():
 
     print(f"Config:\n{config}\n")
 
-    filetypes = [".pgm", ".ppm", ".pnm", ".png", ".dng", ".nef", ".cr2", ".raw", ".npz"]
+    filetypes = [".pgm", ".ppm", ".pnm", ".png", ".pfm", ".dng", ".nef", ".cr2", ".raw", ".npz"]
     filenames, _ = argv.filenames(sys.argv[1:], filetypes, allowAllCaps=True)
     filenames = natsort.natsorted(filenames)
     numfiles = len(filenames)
-    _enforce(numfiles > 0, "No valid PGM/PPM/PNM/PNG/DNG/NEF/CR2/RAW/NPZ files to process. Terminating.")
+    _enforce(numfiles > 0, "No valid PGM/PPM/PNM/PNG/PFM/DNG/NEF/CR2/RAW/NPZ files to process. Terminating.")
     signal.signal(signal.SIGINT, lambda s, f: _onExit())  # Ctrl+C handler
     exitcode = -1
     try:
