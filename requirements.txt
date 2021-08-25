@@ -1,6 +1,6 @@
 opencv-python >= 4.1.0
 natsort >= 7.1.1
-imsize >= 1.0.3
-imgio >= 0.5.6
+imsize >= 1.2.0
+imgio >= 0.6.0
 rawpy >= 0.16.0
-rawpipe >= 0.9.5
+rawpipe >= 0.9.9
