@@ -55,7 +55,7 @@ class ISPConfig:
         self.debug = None             # True | False
         self.outdir = None            # None | <dirname>
         self.outformat = "ppm"        # currently hardcoded
-        self.version = "1.02"         # program version
+        self.version = "1.1.0"        # program version
 
     def __repr__(self):
         reprstr = f"<ISPConfig {self.__dict__}>"
@@ -97,13 +97,17 @@ def bayer2ppm(config, infilespec):
         raw = read_dng(config, infilespec) if is_dng else read_raw()
         if config.verbose:
             print(f"{imginfo}\n")
-    else:  # handle numpy .npz as a special case
-        npz = np.load(infilespec)
-        raw = npz[npz.files[0]]
-        config.width = raw.shape[1]
-        config.height = raw.shape[0]
-        config.bpp = 16
-        config.maxval = 65535
+    else:
+        if infilespec.endswith(".npz"):  # handle numpy .npz as a special case
+            npz = np.load(infilespec)
+            raw = npz[npz.files[0]]
+            config.width = raw.shape[1]
+            config.height = raw.shape[0]
+            config.bpp = 16
+            config.maxval = 65535
+        else:
+            config.maxval = 2 ** int(np.ceil(config.bpp)) - 1
+            raw = imgio.imread(infilespec, config.width, config.height, config.bpp)[0]
     config.bayer_pattern = config.bayer_pattern or "RGGB"
     config.demosaic = raw.ndim == 2
     height, width = raw.shape[:2]
@@ -265,7 +269,8 @@ def main():
     argv.exitIfAnyUnparsedOptions()
 
     if config.verbose:
-        print(f"Bayer RAW converter, version {config.version}")
+        print(f"Bayer RAW converter, version {config.version}.")
+        print()
 
     if len(sys.argv) < 2 or show_help:
         print("Usage: bayer2ppm [options] inputfile.[pgm|png|dng|raw] ...")
