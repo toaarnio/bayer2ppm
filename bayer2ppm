@@ -54,8 +54,8 @@ class ISPConfig:
         self.verbose = None           # True | False
         self.debug = None             # True | False
         self.outdir = None            # None | <dirname>
-        self.outformat = "ppm"        # currently hardcoded
-        self.version = "1.1.0"        # program version
+        self.outformat = None         # ppm | pfm | jpg | ...
+        self.version = "1.2.0"        # program version
 
     def __repr__(self):
         reprstr = f"<ISPConfig {self.__dict__}>"
@@ -120,9 +120,10 @@ def bayer2ppm(config, infilespec):
     if config.outdir is not None:
         outfilename = os.path.join(config.outdir, outfilename)
 
+    image = quantize(config, image)
     imgio.imwrite(outfilename, image, config.maxval)
     if config.verbose:
-        print(f"{_elapsed(t0)} - writing output file [{outfilename}]: {width} x {height}, {config.bpp} bpp")
+        print(f"{_elapsed(t0)} - writing {outfilename} [{width} x {height}, {image.dtype}]")
         print(f"{_elapsed(tStart)} - TOTAL\n")
 
 
@@ -176,6 +177,22 @@ def lsc_rgb_domain(config, img):
     return img
 
 
+def quantize(config, img):
+    if config.outformat.endswith(("pfm", "npy", "exr", "hdr")):
+        # Store as float32, do not clip or quantize
+        img = img.astype(np.float32)
+        config.maxval = 1.0
+    elif config.outformat.endswith(("jpg", "bmp")):
+        # Clip to [0, 1] and quantize to 8 bits
+        img = rawpipe.quantize8(img)
+        config.maxval = 255
+    else:
+        # Clip to [0, 1] and quantize to 16 bits
+        img = rawpipe.quantize16(img)
+        config.maxval = 65535
+    return img
+
+
 def isp(config, img):
     if not config.debug:
         alg = rawpipe.Algorithms(config.verbose)
@@ -190,7 +207,6 @@ def isp(config, img):
         img = alg.tonemap(img, config.tonemap)
         img = alg.chroma_denoise(img, config.cnf_strength)
         img = alg.gamma(img, config.gammamode, config.gamma)
-        img = alg.quantize(img, config.maxval, np.uint16)
     else:
         alg = rawpipe.Algorithms(config.verbose)
         img = alg.linearize(img, config.blacklevel, config.whitelevel)
@@ -205,10 +221,9 @@ def isp(config, img):
         img = alg.tonemap(img, config.tonemap)
         img = alg.chroma_denoise(img, config.cnf_strength)
         img = alg.gamma(img, config.gammamode, config.gamma)
-        img = alg.quantize(img, config.maxval, np.uint16)
         t0 = time.time()
         maxval = config.maxval
-        oflow = img.copy()
+        oflow = alg.quantize(img, config.maxval, np.uint16)  # generate debug image at 16 bpp
         oflow[..., :] = np.mean(oflow, axis=2, keepdims=True)  # black & white image for overflow markers
         oflow[overflow_ccm] = [maxval, maxval, 0]  # YELLOW ==> overflow due to CCM (but not in raw/demosaic/lsc/wb)
         oflow[overflow_wb] = [0, maxval, 0]  # GREEN ==> overflow due to LSC/WB gains (but not in raw/demosaic)
@@ -264,6 +279,7 @@ def main():
     config.gammamode = argv.stringval("--gamma", default=None)
     config.verbose = not argv.exists("--quiet")
     config.debug = argv.exists("--debug")
+    config.outformat = argv.stringval("--outformat", default="ppm", accepted=[fmt[1:] for fmt in imgio.RW_FORMATS])
     config.outdir = argv.stringval("--outdir", default=None)
     show_help = argv.exists("--help")
     argv.exitIfAnyUnparsedOptions()
@@ -289,6 +305,7 @@ def main():
         print("    --tonemap                      apply tonemapping using Reinhard's algorithm; default = None")
         print("    --denoise N                    apply chroma denoising with filter strength N; default = 0.0")
         print("    --gamma sRGB|rec709|file.csv   apply a standard or custom gamma function; default = None")
+        print("    --outformat ppm|pfm|jpg|...    generate output file in the given file format; default = ppm")
         print("    --debug                        write processed image with overflow markers to 'overflow.ppm'")
         print("    --quiet                        do not print any timings or traces for diagnostics")
         print("    --outdir                       output directory for processed files; default = current dir")
